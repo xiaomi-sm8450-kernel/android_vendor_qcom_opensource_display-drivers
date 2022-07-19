@@ -895,7 +895,7 @@ static int dsi_display_status_check_te(struct dsi_display *display,
 		int rechecks)
 {
 	int rc = 1, i = 0;
-	int const esd_te_timeout = msecs_to_jiffies(3*20);
+	int const esd_te_timeout = msecs_to_jiffies(15*20);
 
 	if (!rechecks)
 		return rc;
