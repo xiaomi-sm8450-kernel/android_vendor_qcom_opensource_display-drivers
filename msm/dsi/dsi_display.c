@@ -921,10 +921,56 @@ static int dsi_display_status_check_te(struct dsi_display *display,
 	return rc;
 }
 
+int mi_dsi_panel_write_cmd_set(struct dsi_panel *panel,
+				struct dsi_panel_cmd_set *cmd_sets)
+{
+	int rc = 0, i = 0;
+	ssize_t len;
+	struct dsi_cmd_desc *cmds;
+	u32 count;
+	enum dsi_cmd_set_state state;
+
+	if (!panel) {
+		DSI_ERR("invalid params\n");
+		return -EINVAL;
+	}
+
+	cmds = cmd_sets->cmds;
+	count = cmd_sets->count;
+	state = cmd_sets->state;
+
+	if (count == 0) {
+		DSI_DEBUG("[%s] No commands to be sent for state\n", panel->type);
+		goto error;
+	}
+
+	for (i = 0; i < count; i++) {
+		cmds->ctrl_flags = 0;
+
+		if (state == DSI_CMD_SET_STATE_LP)
+			cmds->msg.flags |= MIPI_DSI_MSG_USE_LPM;
+
+		len = dsi_host_transfer_sub(panel->host, cmds);
+		if (len < 0) {
+			rc = len;
+			DSI_ERR("failed to set cmds, rc=%d\n", rc);
+			goto error;
+		}
+		if (cmds->post_wait_ms)
+			usleep_range(cmds->post_wait_ms * 1000,
+					((cmds->post_wait_ms * 1000) + 10));
+		cmds++;
+	}
+error:
+	return rc;
+}
+
+
 int dsi_display_check_status(struct drm_connector *connector, void *display,
 					bool te_check_override)
 {
 	struct dsi_display *dsi_display = display;
+	struct drm_panel_esd_config *esd;
 	struct dsi_panel *panel;
 	u32 status_mode;
 	int rc = 0x1;
@@ -963,6 +1009,14 @@ int dsi_display_check_status(struct drm_connector *connector, void *display,
 	if ((dsi_display->trusted_vm_env) ||
 			(panel->panel_mode == DSI_OP_VIDEO_MODE))
 		te_rechecks = 0;
+
+	if (status_mode == ESD_MODE_REG_READ) {
+		esd = &(panel->esd_config);
+		if (esd->offset_cmd.count != 0) {
+			rc = mi_dsi_panel_write_cmd_set(dsi_display->panel, &esd->offset_cmd);
+			DSI_DEBUG("wirte esd reg offset command rc = %d\n", rc);
+		}
+	}
 
 	dsi_display_set_ctrl_esd_check_flag(dsi_display, true);
 

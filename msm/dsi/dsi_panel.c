@@ -1851,6 +1851,7 @@ const char *cmd_set_prop_map[DSI_CMD_SET_MAX] = {
 	"qcom,video-mode-switch-out-commands",
 	"qcom,cmd-mode-switch-in-commands",
 	"qcom,cmd-mode-switch-out-commands",
+	"qcom,mdss-dsi-panel-status-offset-command",
 	"qcom,mdss-dsi-panel-status-command",
 	"qcom,mdss-dsi-lp1-command",
 	"qcom,mdss-dsi-lp2-command",
@@ -3311,6 +3312,12 @@ int dsi_panel_parse_esd_reg_read_configs(struct dsi_panel *panel)
 	esd_config = &panel->esd_config;
 	if (!esd_config)
 		return -EINVAL;
+
+	dsi_panel_parse_cmd_sets_sub(&esd_config->offset_cmd,
+				DSI_CMD_SET_PANEL_STATUS_OFFSET, utils);
+	if (!esd_config->offset_cmd.count) {
+		DSI_ERR("panel status offset command parsing failed\n");
+	}
 
 	dsi_panel_parse_cmd_sets_sub(&esd_config->status_cmd,
 				DSI_CMD_SET_PANEL_STATUS, utils);
