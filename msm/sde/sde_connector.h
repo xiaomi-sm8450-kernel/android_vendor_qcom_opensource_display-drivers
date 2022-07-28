@@ -732,6 +732,13 @@ struct sde_connector_state {
 	((S) ? to_sde_connector_state((S))->out_fb : 0)
 
 /**
+ * sde_connector_update_panel_dead - update connector panel_dead property
+ * @conn: pointer to drm connector
+ * @is_dead: bool to set panel_dead property
+ */
+void sde_connector_update_panel_dead(struct drm_connector *conn, bool is_dead);
+
+/**
  * sde_connector_get_topology_name - helper accessor to retrieve topology_name
  * @connector: pointer to drm connector
  * Returns: value of the CONNECTOR_PROP_TOPOLOGY_NAME property or 0
