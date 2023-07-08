@@ -988,12 +988,12 @@ static void _sde_kms_drm_check_dpms(struct drm_atomic_state *old_state,
 			old_mode = DRM_PANEL_EVENT_BLANK;
 		}
 
-		if ((old_mode != new_mode) || (old_fps != new_fps)) {
+		if ((old_mode != new_mode) || ((old_fps != new_fps) && (old_fps != 0))) {
 			c_conn = to_sde_connector(connector);
 			SDE_EVT32(old_mode, new_mode, old_fps, new_fps,
 				c_conn->panel, crtc->state->active,
 				old_conn_state->crtc);
-			DISP_INFO("change detected for connector:%s (power mode %d->%d, fps %d->%d)\n",
+			pr_debug("change detected for connector:%s (power mode %d->%d, fps %d->%d)\n",
 				c_conn->name, old_mode, new_mode, old_fps, new_fps);
 
 			/* If suspend resume and fps change are happening
@@ -1023,8 +1023,9 @@ static void _sde_kms_drm_check_dpms(struct drm_atomic_state *old_state,
 					&notification);
 			SDE_ATRACE_END("panel_event_notification_trigger");
 			elapsed_us = ktime_us_delta(ktime_get(), start_ktime);
-			DISP_UTC_INFO("early_trigger(%d) panel event notification takes %d.%d(ms)\n",
-				is_pre_commit, (int)(elapsed_us / 1000), (int)(elapsed_us % 1000));
+			DISP_TIME_INFO("%s early_trigger:%d (power mode %d->%d, fps %d->%d) - %d.%d(ms)\n",
+				c_conn->name, is_pre_commit, old_mode, new_mode, old_fps, new_fps,
+				(int)(elapsed_us / 1000), (int)(elapsed_us % 1000));
 		}
 	}
 
@@ -1644,7 +1645,7 @@ static void sde_kms_wait_for_commit_done(struct msm_kms *kms,
 
 	sde_crtc_static_cache_read_kickoff(crtc);
 
-	SDE_ATRACE_END("sde_ksm_wait_for_commit_done");
+	SDE_ATRACE_END("sde_kms_wait_for_commit_done");
 }
 
 static void sde_kms_prepare_fence(struct msm_kms *kms,

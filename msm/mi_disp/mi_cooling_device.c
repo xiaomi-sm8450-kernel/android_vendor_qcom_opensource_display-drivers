@@ -1,8 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0-only
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2020, The Linux Foundation. All rights reserved.
- * Copyright (C) 2020 XiaoMi, Inc.
+ * Copyright (c) 2020 XiaoMi, Inc. All rights reserved.
  */
+
 #include <linux/err.h>
 #include <linux/slab.h>
 #include "sde_dbg.h"
@@ -50,11 +51,11 @@ static int mi_sde_cdev_set_cur_brightness(struct thermal_cooling_device *cdev,
 	disp_cdev->thermal_state = state;
 	if (mi_sde_cdev->panel->mi_cfg.thermal_dimming_enabled) {
 		sysfs_notify(&cdev->device.kobj, NULL, "cur_state");
-		DISP_UTC_INFO("thermal dimming:set thermal_brightness_limit to %d percent\n",
+		DISP_TIME_INFO("thermal dimming:set thermal_brightness_limit to %d percent\n",
 				state);
 	} else {
        brightness_lvl = mi_sde_cdev->panel->mi_cfg.max_brightness_clone * state / 200;
-	   DISP_UTC_INFO("thermal dimming:set thermal_brightness_limit to %d\n",
+	   DISP_TIME_INFO("thermal dimming:set thermal_brightness_limit to %d\n",
 			   brightness_lvl);
 		blocking_notifier_call_chain(&disp_cdev->notifier_head,
 				brightness_lvl, (void *)disp_cdev->bd);
@@ -71,7 +72,7 @@ static int mi_sde_backlight_cooling_cb(struct notifier_block *nb,
 	struct dsi_display *dsi_display;
 
 	c_conn = bl_get_data(bd);
-	DISP_UTC_INFO("brightness clone: thermal max brightness cap:%lu\n", val);
+	DISP_TIME_INFO("brightness clone: thermal max brightness cap:%lu\n", val);
 
 	dsi_display = (struct dsi_display *) c_conn->display;
 	dsi_display->panel->mi_cfg.thermal_max_brightness_clone = val;

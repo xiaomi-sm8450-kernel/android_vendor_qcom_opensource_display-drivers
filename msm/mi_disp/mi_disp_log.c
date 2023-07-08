@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0-only
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2020, The Linux Foundation. All rights reserved.
- * Copyright (C) 2020 XiaoMi, Inc.
+ * Copyright (c) 2020 XiaoMi, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "mi_disp_log:[%s:%d] " fmt, __func__, __LINE__
@@ -77,6 +77,10 @@ struct disp_log_read {
 
 struct disp_log *g_disp_log = NULL;
 
+bool mi_disp_log_is_initialized(void)
+{
+	return g_disp_log ? g_disp_log->initialized : false;
+}
 
 static int mi_disp_log_printk_func(struct log_buf *log_buf,
 		const char *fmt, va_list args)
@@ -114,45 +118,51 @@ static int mi_disp_log_printk_func(struct log_buf *log_buf,
 static int mi_disp_log_kenrel_printk(const char *fmt, ...)
 {
 	va_list args;
-	int r;
+	int rc;
 	struct log_buf *log_buf = NULL;
 
-	if (!g_disp_log)
-		mi_disp_log_init();
+	if (!mi_disp_log_is_initialized()) {
+		DISP_ERROR("mi disp_log not initialized!\n");
+		return -ENODEV;
+	}
+
 	log_buf = &g_disp_log->log[LOG_TYPE_KERNEL];
 
 	va_start(args, fmt);
-	r = mi_disp_log_printk_func(log_buf, fmt, args);
+	rc = mi_disp_log_printk_func(log_buf, fmt, args);
 	va_end(args);
 
 	if (atomic_read(&log_buf->wait)) {
 		atomic_set(&log_buf->wait, 0);
 		wake_up_all(&log_buf->wq_head);
 	}
-	return r;
+	return rc;
 }
 
 static int mi_disp_log_user_printk(struct log_buf *log_buf,
 		const char *fmt, ...)
 {
 	va_list args;
-	int r;
+	int rc;
 
 	va_start(args, fmt);
-	r = mi_disp_log_printk_func(log_buf, fmt, args);
+	rc = mi_disp_log_printk_func(log_buf, fmt, args);
 	va_end(args);
 
 	if (atomic_read(&log_buf->wait)) {
 		atomic_set(&log_buf->wait, 0);
 		wake_up_all(&log_buf->wq_head);
 	}
-	return r;
+	return rc;
 }
 
 void disp_log_printk(const char *format, ...)
 {
 	struct va_format vaf;
 	va_list args;
+
+	if (!mi_disp_log_is_initialized())
+		return;
 
 	va_start(args, format);
 	vaf.fmt = format;
@@ -172,6 +182,9 @@ void disp_log_printk_utc(const char *format, ...)
 	struct va_format vaf;
 	va_list args;
 
+	if (!mi_disp_log_is_initialized())
+		return;
+
 	ktime_get_real_ts64(&ts);
 	time64_to_tm(ts.tv_sec, 0, &tm);
 
@@ -190,7 +203,6 @@ void disp_log_printk_utc(const char *format, ...)
 }
 EXPORT_SYMBOL(disp_log_printk_utc);
 
-#if MI_DISP_LOG_DEBUFFS_ENABLE
 static int mi_disp_log_read_stats(struct log_buf *log,
 		struct disp_log_read *read_ptr, size_t count)
 {
@@ -348,7 +360,6 @@ static const struct file_operations disp_log_debugfs_fops = {
 	.write   = mi_disp_log_debugfs_write,
 	.release = mi_disp_log_debugfs_release,
 };
-#endif
 
 static ssize_t mi_disp_log_write(struct file *file, const char __user *buf,
 			 size_t count, loff_t *ppos)
@@ -603,7 +614,6 @@ int mi_disp_log_init(void)
 		goto err_cdev_unreg;
 	}
 
-#if MI_DISP_LOG_DEBUFFS_ENABLE
 	disp_log->debug = debugfs_create_file(DISP_LOG_DEVICE_NAME,
 			0444, disp_core ? disp_core->debugfs_dir : NULL,
 			disp_log, &disp_log_debugfs_fops);
@@ -612,7 +622,6 @@ int mi_disp_log_init(void)
 		ret = -ENOMEM;
 		goto err_dev_destroy;
 	}
-#endif
 
 	disp_log->initialized = true;
 	g_disp_log = disp_log;
@@ -635,9 +644,8 @@ void mi_disp_log_deinit(void)
 {
 	if (!g_disp_log)
 		return;
-#if MI_DISP_LOG_DEBUFFS_ENABLE
+
 	debugfs_remove(g_disp_log->debug);
-#endif
 	device_destroy(g_disp_log->class, g_disp_log->dev_id);
 	mi_disp_cdev_unregister(g_disp_log->cdev);
 	kfree(g_disp_log);

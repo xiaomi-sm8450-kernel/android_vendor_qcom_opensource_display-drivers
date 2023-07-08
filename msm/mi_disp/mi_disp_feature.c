@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0-only
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2020, The Linux Foundation. All rights reserved.
- * Copyright (C) 2020 XiaoMi, Inc.
+ * Copyright (c) 2020 XiaoMi, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "mi_disp_feature:[%s:%d] " fmt, __func__, __LINE__
@@ -33,6 +33,7 @@
 
 #include "mi_disp_procfs.h"
 #include "mi_disp_debugfs.h"
+#include "mi_disp_log.h"
 
 struct disp_feature *g_disp_feature = NULL;
 
@@ -49,78 +50,56 @@ struct disp_feature *mi_get_disp_feature(void)
 	return g_disp_feature;
 }
 
-static void mi_disp_feature_thread_priority_worker(struct kthread_work *work)
-{
-	int ret = 0;
-	struct sched_param param = { 0 };
-	struct task_struct *task = current->group_leader;
-
-	/**
-	 * this priority was found during empiric testing to have appropriate
-	 * realtime scheduling to process display updates and interact with
-	 * other real time and normal priority task
-	 */
-	param.sched_priority = 16;
-	ret = sched_setscheduler(task, SCHED_FIFO, &param);
-	if (ret)
-		pr_warn("pid:%d name:%s priority update failed: %d\n",
-			current->tgid, task->comm, ret);
-}
-
 static int mi_disp_feature_thread_create(struct disp_feature *df, int disp_id)
 {
 	int ret = 0;
-	struct disp_thread *dt_ptr = NULL;
+	struct disp_display *dd_ptr = NULL;
 
 	if (!df || !is_support_disp_id(disp_id)) {
 		DISP_ERROR("invalid params\n");
 		return -EINVAL;
 	}
 
-	dt_ptr = &df->d_display[disp_id].feature_thread;
-	dt_ptr->dd_ptr = &df->d_display[disp_id];
-	kthread_init_worker(&dt_ptr->worker);
-	dt_ptr->thread = kthread_run(kthread_worker_fn,
-			&dt_ptr->worker, "disp_feature:%d", disp_id);
-	kthread_queue_work(&dt_ptr->worker, &df->thread_priority_work);
-	if (IS_ERR(dt_ptr->thread)) {
-		DISP_ERROR("failed to create disp_feature:%d kthread\n", disp_id);
-		ret = PTR_ERR(dt_ptr->thread);
-		dt_ptr->thread = NULL;
-		goto exit;
-	}
+	dd_ptr = &df->d_display[disp_id];
 
-	init_waitqueue_head(&dt_ptr->dd_ptr->pending_wq);
+	dd_ptr->worker = kthread_create_worker(0, "disp_feature:%d", disp_id);
+	if (IS_ERR(dd_ptr->worker)) {
+		DISP_ERROR("failed to create disp_feature:%d kthread\n", disp_id);
+		return PTR_ERR(dd_ptr->worker);
+
+	}
+	/* set realtime priority */
+	sched_set_fifo(dd_ptr->worker->task);
+
+	init_waitqueue_head(&dd_ptr->pending_wq);
+	atomic_set(&dd_ptr->pending_doze_cnt, 0);
 
 	DISP_INFO("create disp_feature:%d kthread success\n", disp_id);
 
-exit:
 	return ret;
 }
+
 
 static int mi_disp_feature_thread_destroy(struct disp_feature *df, int disp_id)
 {
 	int ret = 0;
-	struct disp_thread *dt_ptr = NULL;
+	struct disp_display *dd_ptr = NULL;
 
 	if (!df || !is_support_disp_id(disp_id)) {
 		DISP_ERROR("invalid params\n");
 		return -EINVAL;
 	}
 
-	dt_ptr = &df->d_display[disp_id].feature_thread;
-	if (dt_ptr->thread) {
-		kthread_flush_worker(&dt_ptr->worker);
-		kthread_stop(dt_ptr->thread);
-		dt_ptr->thread = NULL;
+	dd_ptr = &df->d_display[disp_id];
+	if (dd_ptr->worker) {
+		kthread_destroy_worker(dd_ptr->worker);
 	}
-
-	dt_ptr->dd_ptr = NULL;
 
 	DISP_INFO("destroy disp_feature:%d kthread success\n", disp_id);
 
 	return ret;
 }
+
 
 int mi_disp_feature_attach_display(void *display, int disp_id, int intf_type)
 {
@@ -146,6 +125,7 @@ int mi_disp_feature_attach_display(void *display, int disp_id, int intf_type)
 	dd_ptr = &df->d_display[disp_id];
 
 	dd_ptr->display = display;
+	dd_ptr->disp_id = disp_id;
 	dd_ptr->intf_type = intf_type;
 
 	dd_ptr->dev = device_create(df->class, df->pdev, 0, dd_ptr,
@@ -378,6 +358,8 @@ int mi_disp_feature_init(void)
 	if (ret < 0)
 		return -ENODEV;
 
+	mi_disp_log_init();
+
 	disp_core = mi_get_disp_core();
 	if (!disp_core)
 		return -ENODEV;
@@ -414,11 +396,10 @@ int mi_disp_feature_init(void)
 	for (i = MI_DISP_PRIMARY; i < MI_DISP_MAX; i++) {
 		df->d_display[i].dev = NULL;
 		df->d_display[i].display = NULL;
+		df->d_display[i].disp_id = MI_DISP_MAX;
 		df->d_display[i].intf_type = MI_INTF_MAX;
 		mutex_init(&df->d_display[i].mutex_lock);
-		atomic_set(&df->d_display[i].pending_doze_cnt, 0);
 	}
-	kthread_init_work(&df->thread_priority_work, mi_disp_feature_thread_priority_worker);
 	INIT_LIST_HEAD(&df->client_list);
 	spin_lock_init(&df->client_spinlock);
 
@@ -445,6 +426,7 @@ void mi_disp_feature_deinit(void)
 	mi_disp_cdev_unregister(g_disp_feature->cdev);
 	kfree(g_disp_feature);
 	g_disp_feature = NULL;
+	mi_disp_log_deinit();
 	mi_disp_core_deinit();
 }
 

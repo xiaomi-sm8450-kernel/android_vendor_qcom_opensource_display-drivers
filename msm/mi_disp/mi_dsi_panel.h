@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2020, The Linux Foundation. All rights reserved.
- * Copyright (C) 2020 XiaoMi, Inc.
+ * Copyright (c) 2020 XiaoMi, Inc. All rights reserved.
  */
 
 #ifndef _MI_DSI_PANEL_H_
@@ -22,11 +22,35 @@ enum backlight_dimming_state {
 	STATE_ALL
 };
 
+enum dimming_speed_state {
+	DIMMING_NONE = 0,
+	DIMMING_LOW_BL,
+	DIMMING_MEDIUM_BL,
+	DIMMING_NORMAL_BL,
+	DIMMING_HIGH_BL,
+	DIMMING_ALL
+};
+
+enum dimming_speed_switch {
+	DIMMING_SPEED_SWITCH_OFF = 0,
+	DIMMING_SPEED_SWITCH_ON,
+	DIMMING_SPEED_SWITCH_DEFAULT,
+	DIMMING_SPEED_SWITCH_ALL
+};
+
+enum dimming_speed {
+	DIMMING_SPEED_0FRAME = 0,
+	DIMMING_SPEED_4FRAME = 4,
+	DIMMING_SPEED_8FRAME = 8,
+	DIMMING_SPEED_ALL
+};
+
 enum panel_state {
 	PANEL_STATE_OFF = 0,
 	PANEL_STATE_ON,
 	PANEL_STATE_DOZE_HIGH,
 	PANEL_STATE_DOZE_LOW,
+	PANEL_STATE_DOZE_TO_NORMAL,
 	PANEL_STATE_MAX,
 };
 
@@ -34,6 +58,12 @@ enum dc_lut_state {
 	DC_LUT_60HZ,
 	DC_LUT_120HZ,
 	DC_LUT_MAX
+};
+
+enum dc_feature_type {
+	TYPE_NONE = 0,
+	TYPE_LUT_COMPATIBLE_BL,
+	TYPE_CRC_SKIP_BL
 };
 
 /* Enter/Exit DC_LUT info */
@@ -47,6 +77,7 @@ struct flat_mode_cfg {
 	bool update_done;
 	bool cur_flat_state;  /*only use when flat cmd need sync with te*/
 	u8 flat_on_data[4];
+	u8 flat_off_data[4];
 };
 
 struct mi_dsi_panel_cfg {
@@ -70,7 +101,7 @@ struct mi_dsi_panel_cfg {
 	/* set by user space */
 	/* maybe less than @brightness_clone due to thermal limit */
 	u32 user_brightness_clone;
-	u32 real_brightness_clone;
+	atomic_t real_brightness_clone;
 	u32 max_brightness_clone;
 	u32 normal_max_brightness_clone;
 	u32 thermal_max_brightness_clone;
@@ -97,29 +128,37 @@ struct mi_dsi_panel_cfg {
 	bool lhbm_g500_update_flag;
 	bool lhbm_g500_updatedone;
 	bool lhbm_alpha_ctrlaa;
+	bool lhbm_ctrl_df_reg;
+	bool lhbm_ctrl_b2_reg;
 	bool lhbm_w1000_update_flag;
 	bool lhbm_w1000_readbackdone;
 	bool lhbm_w110_update_flag;
 	bool lhbm_w110_readbackdone;
 	bool uefi_read_lhbm_success;
+	bool uefi_read_gray_scale_success;
 	u8 lhbm_rgb_param[24];
+	u8 gray_scale_info[42];
 	u8 whitebuf_1000_gir_on[6];
 	u8 whitebuf_1000_gir_off[6];
 	u8 whitebuf_110_gir_on[6];
 	u8 whitebuf_110_gir_off[6];
+	u8 greenbuf_500nit[6];
 
 	/* DDIC round corner */
 	bool ddic_round_corner_enabled;
 
 	/* DC */
-	u32 dc_type;
+	bool dc_feature_enable;
 	bool dc_update_flag;
-	struct dc_lut_cfg dc_cfg;
+	enum dc_feature_type dc_type;
 	u32 dc_threshold;
+	struct dc_lut_cfg dc_cfg;
+	u32 real_dc_state;
 
 	/* flat mode */
 	bool flat_sync_te;
 	bool flat_update_flag;
+	bool flat_update_gamma_zero;
 	struct flat_mode_cfg flat_cfg;
 
     /* record the last refresh_rate */
@@ -128,6 +167,9 @@ struct mi_dsi_panel_cfg {
 	/* Dimming */
 	u32 panel_on_dimming_delay;
 	u32 dimming_state;
+	bool dimming_need_update_speed;
+	u8 dimming_speed_state;
+	u32 dimming_node[5];
 
 	/* Panel status */
 	int panel_state;
@@ -150,12 +192,17 @@ int mi_dsi_panel_deinit(struct dsi_panel *panel);
 int mi_dsi_acquire_wakelock(struct dsi_panel *panel);
 int mi_dsi_release_wakelock(struct dsi_panel *panel);
 
+bool is_target_fps_support_dc(struct dsi_panel *panel);
+
 bool is_aod_and_panel_initialized(struct dsi_panel *panel);
 
 bool is_backlight_set_skip(struct dsi_panel *panel, u32 bl_lvl);
 
 void mi_dsi_panel_update_last_bl_level(struct dsi_panel *panel,
 			int brightness);
+
+void mi_dsi_panel_update_dimming_frame(struct dsi_panel *panel,
+			u8 dimming_switch, u8 frame);
 
 bool is_hbm_fod_on(struct dsi_panel *panel);
 
@@ -188,7 +235,10 @@ bool mi_dsi_panel_is_need_tx_cmd(u32 feature_id);
 int mi_dsi_panel_set_disp_param(struct dsi_panel *panel,
 			struct disp_feature_ctl *ctl);
 
-ssize_t mi_dsi_panel_get_disp_param(struct dsi_panel *panel,
+int mi_dsi_panel_get_disp_param(struct dsi_panel *panel,
+			struct disp_feature_ctl *ctl);
+
+ssize_t mi_dsi_panel_show_disp_param(struct dsi_panel *panel,
 			char *buf, size_t size);
 
 int mi_dsi_panel_set_doze_brightness(struct dsi_panel *panel,
@@ -217,11 +267,26 @@ int mi_dsi_panel_get_brightness_clone(struct dsi_panel *panel,
 int mi_dsi_panel_get_max_brightness_clone(struct dsi_panel *panel,
 			u32 *max_brightness_clone);
 
-int mi_dsi_set_dc_mode_locked(struct dsi_panel *panel, bool enable);
+int mi_dsi_panel_set_dc_mode(struct dsi_panel *panel, bool enable);
+
+int mi_dsi_panel_set_dc_mode_locked(struct dsi_panel *panel, bool enable);
+
+int mi_dsi_panel_read_and_update_flat_param_locked(struct dsi_panel *panel);
 
 int mi_dsi_panel_read_and_update_flat_param(struct dsi_panel *panel);
 
+int mi_dsi_panel_read_and_update_dc_param_locked(struct dsi_panel *panel);
+
 int mi_dsi_panel_read_and_update_dc_param(struct dsi_panel *panel);
+
+int mi_dsi_panel_read_manufacturer_info_locked(struct dsi_panel *panel,
+		u32 manufacturer_info_addr, char *rdbuf, int rdlen);
+
+int mi_dsi_panel_read_manufacturer_info(struct dsi_panel *panel,
+		u32 manufacturer_info_addr, char *rdbuf, int rdlen);
+
+
+int mi_dsi_panel_read_lhbm_white_param_locked(struct dsi_panel *panel);
 
 int mi_dsi_panel_read_lhbm_white_param(struct dsi_panel *panel);
 
@@ -240,6 +305,6 @@ int mi_dsi_update_switch_cmd(struct dsi_panel *panel);
 int mi_dsi_update_nolp_cmd_B2reg(struct dsi_panel *panel,
 			enum dsi_cmd_set_type type);
 
-int mi_dsi_panel_tigger_sec_timming_switch_work(struct dsi_panel *panel);
-#endif /* _MI_DSI_PANEL_H_ */
+int mi_dsi_update_51_mipi_cmd(struct dsi_panel *panel,enum dsi_cmd_set_type type, int bl_lvl);
 
+#endif /* _MI_DSI_PANEL_H_ */

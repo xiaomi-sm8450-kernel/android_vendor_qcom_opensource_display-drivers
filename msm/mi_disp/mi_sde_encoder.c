@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0-only
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2020, The Linux Foundation. All rights reserved.
- * Copyright (C) 2020 XiaoMi, Inc.
+ * Copyright (c) 2020 XiaoMi, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt)	"[mi_sde_encoder:%s:%d] " fmt, __func__, __LINE__
@@ -134,4 +134,3 @@ ssize_t mi_sde_encoder_calc_hw_vsync_info(struct dsi_display *display,
 			(display->panel->panel_mode == DSI_OP_VIDEO_MODE) ? "dsi_video" : "dsi_cmd",
 			display->panel->type);
 }
-

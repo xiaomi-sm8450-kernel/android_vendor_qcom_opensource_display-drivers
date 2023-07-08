@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0-only
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2020, The Linux Foundation. All rights reserved.
- * Copyright (C) 2020 XiaoMi, Inc.
+ * Copyright (c) 2020 XiaoMi, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "mi_sde_connector:[%s:%d] " fmt, __func__, __LINE__
@@ -20,6 +20,8 @@
 #include "mi_dsi_display.h"
 #include "mi_sde_connector.h"
 #include "mi_disp_lhbm.h"
+#include "mi_panel_id.h"
+
 
 static irqreturn_t mi_esd_err_irq_handle(int irq, void *data)
 {
@@ -184,7 +186,7 @@ int mi_sde_connector_debugfs_esd_sw_trigger(void *display)
 }
 
 
-int mi_sde_connector_upadate_aod_status(struct drm_connector *connector,
+static int mi_sde_connector_update_aod_status(struct drm_connector *connector,
 		bool is_aod_exit)
 {
 	struct sde_connector *c_conn;
@@ -224,6 +226,10 @@ int mi_sde_connector_upadate_aod_status(struct drm_connector *connector,
 					}
 				} else {
 					sde_enc->ready_kickoff = false;
+				}
+				if (c_conn->lp_mode == SDE_MODE_DPMS_LP1
+						|| c_conn->lp_mode == SDE_MODE_DPMS_LP2) {
+					dsi_panel_set_nolp(display->panel);
 				}
 			}
 		}
@@ -269,7 +275,7 @@ int mi_sde_connector_update_layer_state(struct drm_connector *connector,
 		if (connector->connector_type == DRM_MODE_CONNECTOR_DSI) {
 			display = (struct dsi_display *)c_conn->display;
 			if (display && mi_disp_lhbm_fod_enabled(display->panel)) {
-				mi_disp_lhbm_animal_status_update(display, cur_flags.fod_anim_flag);
+				mi_disp_lhbm_aod_to_normal_optimize(display, cur_flags.fod_anim_flag);
 			}
 		}
 	}
@@ -277,7 +283,7 @@ int mi_sde_connector_update_layer_state(struct drm_connector *connector,
 	if (connector->connector_type == DRM_MODE_CONNECTOR_DSI) {
 		display = (struct dsi_display *)c_conn->display;
 		if (display)
-			mi_sde_connector_upadate_aod_status(connector, !cur_flags.aod_flag);
+			mi_sde_connector_update_aod_status(connector, !cur_flags.aod_flag);
 	}
 
 	if (connector->connector_type == DRM_MODE_CONNECTOR_DSI) {
@@ -345,5 +351,4 @@ int mi_sde_connector_flat_fence(struct drm_connector *connector)
 
 	return rc;
 }
-
 

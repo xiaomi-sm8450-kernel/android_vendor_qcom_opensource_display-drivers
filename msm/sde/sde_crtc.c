@@ -4474,8 +4474,8 @@ static void _sde_crtc_reset(struct drm_crtc *crtc)
 	/* mark mixer cfgs dirty before wiping them */
 	sde_crtc_clear_cached_mixer_cfg(crtc);
 
-	memset(sde_crtc->mixers, 0, sizeof(sde_crtc->mixers));
 	sde_crtc->num_mixers = 0;
+	memset(sde_crtc->mixers, 0, sizeof(sde_crtc->mixers));
 	sde_crtc->mixers_swapped = false;
 
 	/* disable clk & bw control until clk & bw properties are set */
@@ -7532,6 +7532,7 @@ static int _sde_crtc_event_disable(struct sde_kms *kms,
 		return ret;
 	}
 
+	mutex_lock(&crtc->crtc_lock);
 	ret = node->func(crtc_drm, false, &node->irq);
 	if (ret) {
 		spin_lock_irqsave(&crtc->spin_lock, flags);
@@ -7540,6 +7541,7 @@ static int _sde_crtc_event_disable(struct sde_kms *kms,
 	} else {
 		kfree(node);
 	}
+	mutex_unlock(&crtc->crtc_lock);
 
 	pm_runtime_put_sync(crtc_drm->dev->dev);
 	return ret;

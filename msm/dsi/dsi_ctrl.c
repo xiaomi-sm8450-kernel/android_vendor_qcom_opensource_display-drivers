@@ -2,7 +2,6 @@
 /*
  * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
- * Copyright (C) 2021 XiaoMi, Inc.
  */
 
 #include <linux/of_device.h>
@@ -1793,8 +1792,10 @@ static int dsi_message_rx(struct dsi_ctrl *dsi_ctrl, struct dsi_cmd_desc *cmd_de
 					buff, total_bytes_read,
 					total_read_len, rd_pkt_size,
 					&hw_read_cnt);
-		if (!dlen)
+		if (!dlen) {
+			buff = head;
 			goto error;
+		}
 
 		if (short_resp)
 			break;

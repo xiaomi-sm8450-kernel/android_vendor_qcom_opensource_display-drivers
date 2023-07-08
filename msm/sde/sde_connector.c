@@ -2,7 +2,6 @@
 /*
  * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
- * Copyright (C) 2021 XiaoMi, Inc.
  */
 
 #define pr_fmt(fmt)	"[drm:%s:%d] " fmt, __func__, __LINE__
@@ -679,16 +678,52 @@ void sde_connector_schedule_status_work(struct drm_connector *connector,
 	}
 }
 
+static void _sde_connector_notify_crtc_DPMS_on(struct sde_connector *c_conn)
+{
+
+	struct drm_connector *connector = NULL;
+	struct drm_crtc *crtc = NULL;
+	struct dsi_display *dsi_display = NULL;
+	struct dsi_backlight_config *bl_config = NULL;
+
+	if (!c_conn)
+		return;
+	connector = &c_conn->base;
+	if (!connector || !connector->state)
+		return;
+
+	crtc = connector->state->crtc;
+	if (c_conn->connector_type== DRM_MODE_CONNECTOR_DSI) {
+		dsi_display = c_conn->display;
+		if (!dsi_display || !dsi_display->panel) {
+			SDE_ERROR("Invalid params(s) dsi_display %pK, panel %pK\n",
+				dsi_display,
+				((dsi_display) ? dsi_display->panel : NULL));
+			return;
+		}
+
+		bl_config = &dsi_display->panel->bl_config;
+
+	}
+
+	if (bl_config && bl_config->dimming_enabled)
+		sde_cp_crtc_restore_pcc(crtc);
+}
+
 static int _sde_connector_update_power_locked(struct sde_connector *c_conn)
 {
 	struct drm_connector *connector;
 	void *display;
 	int (*set_power)(struct drm_connector *conn, int status, void *disp);
 	int mode, rc = 0;
+	char trace_buf[64];
 
 	if (!c_conn)
 		return -EINVAL;
 	connector = &c_conn->base;
+
+	if (c_conn->lp_mode == SDE_MODE_DPMS_ON)
+		_sde_connector_notify_crtc_DPMS_on(c_conn);
 
 	switch (c_conn->dpms_mode) {
 	case DRM_MODE_DPMS_ON:
@@ -714,6 +749,10 @@ static int _sde_connector_update_power_locked(struct sde_connector *c_conn)
 	SDE_DEBUG("conn %d - dpms %d, lp %d, panel %d\n", connector->base.id,
 			c_conn->dpms_mode, c_conn->lp_mode, mode);
 
+	snprintf(trace_buf, sizeof(trace_buf), "set_power:%s",
+			get_display_power_mode_name(mode));
+	SDE_ATRACE_BEGIN(trace_buf);
+
 	if (mode != c_conn->last_panel_power_mode && c_conn->ops.set_power) {
 		display = c_conn->display;
 		set_power = c_conn->ops.set_power;
@@ -725,11 +764,13 @@ static int _sde_connector_update_power_locked(struct sde_connector *c_conn)
 	c_conn->last_panel_power_mode = mode;
 
 	mutex_unlock(&c_conn->lock);
-	if (mode != SDE_MODE_DPMS_ON)
+	if (mode > c_conn->max_esd_check_power_mode)
 		sde_connector_schedule_status_work(connector, false);
 	else
 		sde_connector_schedule_status_work(connector, true);
 	mutex_lock(&c_conn->lock);
+
+	SDE_ATRACE_END(trace_buf);
 
 	return rc;
 }
@@ -1239,8 +1280,6 @@ void sde_connector_helper_bridge_enable(struct drm_connector *connector)
 
 	if (display && mi_disp_lhbm_fod_enabled(display->panel)) {
 		mi_disp_lhbm_fod_allow_tx_lhbm(display, true);
-		/* wake up lhbm_fod pending work */
-		mi_disp_lhbm_fod_wakeup_pending_work(display);
 	}
 
 	/* wake up pending work to set doze brightness */
@@ -3255,6 +3294,7 @@ struct drm_connector *sde_connector_init(struct drm_device *dev,
 	struct msm_drm_private *priv;
 	struct sde_kms *sde_kms;
 	struct sde_connector *c_conn = NULL;
+	struct dsi_display *dsi_display;
 	struct msm_display_info display_info;
 	int rc;
 
@@ -3295,6 +3335,7 @@ struct drm_connector *sde_connector_init(struct drm_device *dev,
 	c_conn->dpms_mode = DRM_MODE_DPMS_ON;
 	c_conn->lp_mode = 0;
 	c_conn->last_panel_power_mode = SDE_MODE_DPMS_ON;
+	c_conn->max_esd_check_power_mode = SDE_MODE_DPMS_ON;
 
 	sde_kms = to_sde_kms(priv->kms);
 	if (sde_kms->vbif[VBIF_NRT]) {
@@ -3382,6 +3423,13 @@ struct drm_connector *sde_connector_init(struct drm_device *dev,
 			sde_connector_handle_panel_id, c_conn);
 		if (rc)
 			SDE_ERROR("register panel id event err %d\n", rc);
+	}
+
+	dsi_display = (struct dsi_display *)(display);
+	if (connector_type == DRM_MODE_CONNECTOR_DSI &&
+			dsi_display && dsi_display->panel &&
+			dsi_display->panel->esd_config.esd_aod_enabled) {
+		c_conn->max_esd_check_power_mode = SDE_MODE_DPMS_LP2;
 	}
 
 	rc = msm_property_install_get_status(&c_conn->property_info);

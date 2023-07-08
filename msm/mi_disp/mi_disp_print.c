@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0-only
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2020, The Linux Foundation. All rights reserved.
- * Copyright (C) 2020 XiaoMi, Inc.
+ * Copyright (c) 2020 XiaoMi, Inc. All rights reserved.
  */
 
 #include <linux/types.h>
@@ -46,15 +46,18 @@ void mi_disp_dbg(const char *format, ...)
 	va_end(args);
 }
 
-void mi_disp_printk_utc(const char *level, const char *format, ...)
+void mi_disp_local_time_printk(const char *level, const char *format, ...)
 {
-	struct timespec64 ts;
-	struct tm tm;
+	struct timespec64 tv;
+	struct rtc_time tm;
+	unsigned long local_time;
 	struct va_format vaf;
 	va_list args;
 
-	ktime_get_real_ts64(&ts);
-	time64_to_tm(ts.tv_sec, 0, &tm);
+	ktime_get_real_ts64(&tv);
+	/* Convert rtc to local time */
+	local_time = (u32)(tv.tv_sec - (sys_tz.tz_minuteswest * 60));
+	rtc_time64_to_tm(local_time, &tm);
 
 	va_start(args, format);
 	vaf.fmt = format;
@@ -63,24 +66,27 @@ void mi_disp_printk_utc(const char *level, const char *format, ...)
 	printk("%s" "[" DISP_NAME ":%ps][%d-%02d-%02d %02d:%02d:%02d.%06lu] %pV",
 			level, __builtin_return_address(0),
 			tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-			tm.tm_hour, tm.tm_min, tm.tm_sec, ts.tv_nsec/1000,
+			tm.tm_hour, tm.tm_min, tm.tm_sec, tv.tv_nsec / 1000,
 			&vaf);
 
 	va_end(args);
 }
 
-void mi_disp_dbg_utc(const char *format, ...)
+void mi_disp_local_time_dbg(const char *format, ...)
 {
-	struct timespec64 ts;
-	struct tm tm;
+	struct timespec64 tv;
+	struct rtc_time tm;
+	unsigned long local_time;
 	struct va_format vaf;
 	va_list args;
 
 	if (!is_enable_debug_log())
 		return;
 
-	ktime_get_real_ts64(&ts);
-	time64_to_tm(ts.tv_sec, 0, &tm);
+	ktime_get_real_ts64(&tv);
+	/* Convert rtc to local time */
+	local_time = (u32)(tv.tv_sec - (sys_tz.tz_minuteswest * 60));
+	rtc_time64_to_tm(local_time, &tm);
 
 	va_start(args, format);
 	vaf.fmt = format;
@@ -89,7 +95,7 @@ void mi_disp_dbg_utc(const char *format, ...)
 	printk(KERN_DEBUG "[" DISP_NAME ":%ps][%d-%02d-%02d %02d:%02d:%02d.%06lu] %pV",
 			 __builtin_return_address(0),
 			tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-			tm.tm_hour, tm.tm_min, tm.tm_sec, ts.tv_nsec/1000,
+			tm.tm_hour, tm.tm_min, tm.tm_sec, tv.tv_nsec / 1000,
 			&vaf);
 
 	va_end(args);

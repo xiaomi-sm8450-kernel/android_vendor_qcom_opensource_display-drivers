@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0-only
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2020, The Linux Foundation. All rights reserved.
- * Copyright (C) 2020 XiaoMi, Inc.
+ * Copyright (c) 2020 XiaoMi, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "mi_disp_file:[%s:%d] " fmt, __func__, __LINE__
@@ -204,7 +204,7 @@ static int mi_disp_set_feature_queue_work(struct disp_display *dd_ptr,
 	cur_work->data = (u8 *)cur_work + sizeof(struct disp_work);
 	memcpy(cur_work->data, data, size);
 
-	kthread_queue_work(&dd_ptr->feature_thread.worker, &cur_work->work);
+	kthread_queue_work(dd_ptr->worker, &cur_work->work);
 
 	return 0;
 }
@@ -229,40 +229,51 @@ static int mi_disp_ioctl_set_feature(struct disp_feature_client *client, void *d
 		if (dd_ptr->intf_type == MI_INTF_DSI) {
 			ctl.feature_id = req->feature_id;
 			ctl.feature_val = req->feature_val;
-			if (req->tx_len) {
-				ctl.tx_len = req->tx_len;
-				ctl.tx_ptr = kzalloc(ctl.tx_len, GFP_KERNEL);
-				if (!ctl.tx_ptr) {
-					ret = -ENOMEM;
-					goto exit;
-				}
-				if (copy_from_user(ctl.tx_ptr, (void __user *)req->tx_ptr,
-					ctl.tx_len) != 0) {
-					ret = -EFAULT;
-					goto err_free_tx;
-				}
-			}
-			if (req->rx_len) {
-				ctl.rx_len = req->rx_len;
-				ctl.rx_ptr = kzalloc(ctl.rx_len, GFP_KERNEL);
-				if (!ctl.rx_ptr) {
-					ret = -ENOMEM;
-					goto err_free_tx;
-				}
-			}
 
-			if (req->base.flag == MI_DISP_FLAG_NONBLOCK) {
-				ret = mi_disp_set_feature_queue_work(dd_ptr, &ctl, sizeof(ctl));
+			DISP_DEBUG("%s display set feature: %s, value: %d\n",
+				get_disp_id_name(disp_id),
+				get_disp_feature_id_name(ctl.feature_id), ctl.feature_val);
+
+			if (is_support_disp_feature_id(ctl.feature_id)) {
+				if (req->tx_len) {
+					ctl.tx_len = req->tx_len;
+					ctl.tx_ptr = kzalloc(ctl.tx_len, GFP_KERNEL);
+					if (!ctl.tx_ptr) {
+						ret = -ENOMEM;
+						goto exit;
+					}
+					if (copy_from_user(ctl.tx_ptr, (void __user *)req->tx_ptr,
+						ctl.tx_len) != 0) {
+						ret = -EFAULT;
+						goto err_free_tx;
+					}
+				}
+				if (req->rx_len) {
+					ctl.rx_len = req->rx_len;
+					ctl.rx_ptr = kzalloc(ctl.rx_len, GFP_KERNEL);
+					if (!ctl.rx_ptr) {
+						ret = -ENOMEM;
+						goto err_free_tx;
+					}
+				}
+
+				if (req->base.flag == MI_DISP_FLAG_NONBLOCK) {
+					ret = mi_disp_set_feature_queue_work(dd_ptr, &ctl, sizeof(ctl));
+				} else {
+					ret = mi_dsi_display_set_disp_param(dd_ptr->display, &ctl);
+				}
+
+				if (req->rx_len && !ret) {
+					if (copy_to_user((void __user *)req->rx_ptr, ctl.rx_ptr,
+						ctl.rx_len) != 0) {
+						ret = -EFAULT;
+						goto err_free_rx;
+					}
+				}
 			} else {
-				ret = mi_dsi_display_set_disp_param(dd_ptr->display, &ctl);
-			}
-
-			if (req->rx_len && !ret) {
-				if (copy_to_user((void __user *)req->rx_ptr, ctl.rx_ptr,
-					ctl.rx_len) != 0) {
-					ret = -EFAULT;
-					goto err_free_rx;
-				}
+				DISP_ERROR("unsupported disp feature id\n");
+				ret = -EINVAL;
+				goto exit;
 			}
 		} else {
 			DISP_INFO("Unsupported display(%s intf)\n",
@@ -286,6 +297,92 @@ exit:
 	mutex_unlock(&client->client_lock);
 	return ret;
 }
+
+static int mi_disp_ioctl_get_feature(struct disp_feature_client *client, void *data)
+{
+	struct disp_feature *df = client->df;
+	struct disp_feature_req *req = data;
+	u32 disp_id = req->base.disp_id;
+	struct disp_display *dd_ptr = NULL;
+	struct disp_feature_ctl ctl;
+	int ret = 0;
+
+	ret = mutex_lock_interruptible(&client->client_lock);
+	if (ret)
+		return ret;
+
+	memset(&ctl, 0, sizeof(struct disp_feature_ctl));
+
+	if (is_support_disp_id(disp_id)) {
+		dd_ptr = &df->d_display[disp_id];
+		if (dd_ptr->intf_type == MI_INTF_DSI) {
+			ctl.feature_id = req->feature_id;
+
+			DISP_DEBUG("%s display get feature: %s\n", get_disp_id_name(disp_id),
+				get_disp_feature_id_name(ctl.feature_id));
+
+			if (is_support_disp_feature_id(ctl.feature_id)) {
+				if (req->tx_len) {
+					ctl.tx_len = req->tx_len;
+					ctl.tx_ptr = kzalloc(ctl.tx_len, GFP_KERNEL);
+					if (!ctl.tx_ptr) {
+						ret = -ENOMEM;
+						goto exit;
+					}
+					if (copy_from_user(ctl.tx_ptr, (void __user *)req->tx_ptr,
+						ctl.tx_len) != 0) {
+						ret = -EFAULT;
+						goto err_free_tx;
+					}
+				}
+				if (req->rx_len) {
+					ctl.rx_len = req->rx_len;
+					ctl.rx_ptr = kzalloc(ctl.rx_len, GFP_KERNEL);
+					if (!ctl.rx_ptr) {
+						ret = -ENOMEM;
+						goto err_free_tx;
+					}
+				}
+
+				ret = mi_dsi_display_get_disp_param(dd_ptr->display, &ctl);
+				if (!ret) {
+					req->feature_val = ctl.feature_val;
+					if (req->rx_len) {
+						if (copy_to_user((void __user *)req->rx_ptr, ctl.rx_ptr,
+							ctl.rx_len) != 0) {
+							ret = -EFAULT;
+							goto err_free_rx;
+						}
+					}
+				}
+			} else {
+				DISP_ERROR("unsupported disp feature id\n");
+				ret = -EINVAL;
+				goto exit;
+			}
+		} else {
+			DISP_INFO("Unsupported display(%s intf)\n",
+				get_disp_intf_type_name(dd_ptr->intf_type));
+			ret = -EINVAL;
+			goto exit;
+		}
+	} else {
+		DISP_INFO("Unsupported display id\n");
+		ret = -EINVAL;
+		goto exit;
+	}
+
+err_free_rx:
+	if (ctl.rx_len && ctl.rx_ptr)
+		kfree(ctl.rx_ptr);
+err_free_tx:
+	if (ctl.tx_len && ctl.tx_ptr)
+		kfree(ctl.tx_ptr);
+exit:
+	mutex_unlock(&client->client_lock);
+	return ret;
+}
+
 
 static void mi_disp_set_doze_brightness_work_handler(struct kthread_work *work)
 {
@@ -344,7 +441,7 @@ static int mi_disp_set_doze_brightness_queue_work(struct disp_display *dd_ptr,
 	cur_work->data = (u8 *)cur_work + sizeof(struct disp_work);
 	memcpy(cur_work->data, data, size);
 
-	kthread_queue_work(&dd_ptr->feature_thread.worker, &cur_work->work);
+	kthread_queue_work(dd_ptr->worker, &cur_work->work);
 
 	return 0;
 }
@@ -482,6 +579,64 @@ static int mi_disp_ioctl_get_wp_info(struct disp_feature_client *client, void *d
 			if (len && buf) {
 				if (copy_to_user(buf, wp_info, len)) {
 					ret = -EFAULT;
+				}
+			}
+		} else {
+			DISP_INFO("Unsupported display(%s intf)\n",
+				get_disp_intf_type_name(dd_ptr->intf_type));
+			ret = -EINVAL;
+		}
+	} else {
+		DISP_INFO("Unsupported display id\n");
+		ret = -EINVAL;
+	}
+
+	return ret;
+}
+
+static int mi_disp_ioctl_get_manufacturer_info(struct disp_feature_client *client, void *data)
+{
+	int rc = 0;
+	struct disp_feature *df = client->df;
+	struct disp_manufacturer_info_req *req = data;
+	u32 disp_id = req->base.disp_id;
+	char __user *wp_buf;
+	char __user *maxbrightness_buf ;
+	char __user *manufacturertime_buf;
+	struct disp_display *dd_ptr = NULL;
+	struct panel_manufaturer_info info;
+	int len;
+	int ret = 0;
+	wp_buf = req->wp_info;
+	maxbrightness_buf = req->maxbrightness;
+	manufacturertime_buf = req->manufacturer_time;
+	if (is_support_disp_id(disp_id)) {
+		dd_ptr = &df->d_display[disp_id];
+		if (dd_ptr->intf_type == MI_INTF_DSI) {
+			rc = mi_dsi_display_read_manufacturer_struct_by_globleparam(dd_ptr->display,&info);
+			if(rc < 0){
+				DISP_INFO("can not read manufacture_info \n");
+				return -EINVAL;
+			}
+			len = (info.wp_info_len > req->wp_info_len) ? req->wp_info_len : info.wp_info_len;
+			req->wp_info_len = info.wp_info_len;
+			if (len && wp_buf) {
+				if (copy_to_user(wp_buf, info.wp_info, len)) {
+					return -EFAULT;
+				}
+			}
+			len = (info.max_brightness_len > req->max_brightness_len) ? req->max_brightness_len : info.max_brightness_len;
+			req->max_brightness_len = info.max_brightness_len;
+			if (len && maxbrightness_buf) {
+				if (copy_to_user(maxbrightness_buf, info.maxbrightness, len)) {
+					return -EFAULT;
+				}
+			}
+			len = (info.manufacturer_time_len> req->manufacturer_time_len) ? req->manufacturer_time_len : info.manufacturer_time_len;
+			req->manufacturer_time_len= info.manufacturer_time_len;
+			if (len && manufacturertime_buf) {
+				if (copy_to_user(manufacturertime_buf, info.manufacturer_time, len)) {
+					return -EFAULT;
 				}
 			}
 		} else {
@@ -788,6 +943,8 @@ static const struct disp_ioctl_desc disp_ioctls[] = {
 	DISP_IOCTL_DEF(MI_DISP_IOCTL_WRITE_DSI_CMD, mi_disp_ioctl_write_dsi_cmd),
 	DISP_IOCTL_DEF(MI_DISP_IOCTL_READ_DSI_CMD, mi_disp_ioctl_read_dsi_cmd),
 	DISP_IOCTL_DEF(MI_DISP_IOCTL_GET_BRIGHTNESS, mi_disp_ioctl_get_brightness),
+	DISP_IOCTL_DEF(MI_DISP_IOCTL_GET_FEATURE, mi_disp_ioctl_get_feature),
+	DISP_IOCTL_DEF(MI_DISP_IOCTL_GET_MANUFACTURER_INFO, mi_disp_ioctl_get_manufacturer_info),
 };
 
 #define MI_DISP_IOCTL_COUNT	ARRAY_SIZE(disp_ioctls)
@@ -817,7 +974,7 @@ long mi_disp_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		out_size = 0;
 	ksize = max(max(in_size, out_size), drv_size);
 
-	DISP_UTC_DEBUG("pid=%d, %s\n", task_pid_nr(current), ioctl->name);
+	DISP_TIME_DEBUG("pid=%d, %s\n", task_pid_nr(current), ioctl->name);
 
 	func = ioctl->func;
 

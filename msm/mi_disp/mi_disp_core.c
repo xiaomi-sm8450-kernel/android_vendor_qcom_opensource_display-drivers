@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0-only
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2020, The Linux Foundation. All rights reserved.
- * Copyright (C) 2020 XiaoMi, Inc.
+ * Copyright (c) 2020 XiaoMi, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "mi_disp_core:[%s:%d] " fmt, __func__, __LINE__
@@ -64,7 +64,6 @@ err_chrdev_unreg:
 err_exit:
 	return ret;
 }
-
 
 void mi_disp_cdev_unregister(struct cdev *cdev)
 {

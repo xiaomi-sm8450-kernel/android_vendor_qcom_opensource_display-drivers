@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2020, The Linux Foundation. All rights reserved.
- * Copyright (C) 2020 XiaoMi, Inc.
+ * Copyright (c) 2020 XiaoMi, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt)	"mi-disp-parse:[%s:%d] " fmt, __func__, __LINE__
@@ -18,6 +18,7 @@
 
 #define DEFAULT_MAX_BRIGHTNESS_CLONE 4095
 #define SMEM_SW_DISPLAY_LHBM_TABLE 498
+#define SMEM_SW_DISPLAY_GRAY_SCALE_TABLE 499
 
 int mi_dsi_panel_parse_esd_gpio_config(struct dsi_panel *panel)
 {
@@ -102,6 +103,16 @@ static void mi_dsi_panel_parse_lhbm_config(struct dsi_panel *panel)
 	if (mi_cfg->lhbm_alpha_ctrlaa)
 		DISP_INFO("mi,local-hbm-alpha-ctrl-aa-area\n");
 
+	mi_cfg->lhbm_ctrl_df_reg =
+			utils->read_bool(utils->data, "mi,local-hbm-ctrl-df-reg");
+	if (mi_cfg->lhbm_ctrl_df_reg)
+		DISP_INFO("mi,local-hbm-ctrl-df-reg\n");
+
+	mi_cfg->lhbm_ctrl_b2_reg =
+			utils->read_bool(utils->data, "mi,local-hbm-ctrl-b2-reg");
+	if (mi_cfg->lhbm_ctrl_b2_reg)
+		DISP_INFO("mi,local-hbm-ctrl-b2-reg\n");
+
 	rc = utils->read_u32(utils->data, "mi,fod-low-brightness-clone-threshold",
 			&mi_cfg->fod_low_brightness_clone_threshold);
 	if (rc) {
@@ -117,16 +128,17 @@ static void mi_dsi_panel_parse_lhbm_config(struct dsi_panel *panel)
 	}
 	DISP_INFO("fod_low_brightness_lux_threshold=%d\n", mi_cfg->fod_low_brightness_lux_threshold);
 
-	if (mi_get_panel_id(panel->mi_cfg.mi_panel_id) == L3_PANEL_PA) {
+	if (mi_get_panel_id(panel->mi_cfg.mi_panel_id) == L9S_PANEL_PA ||
+		mi_get_panel_id(panel->mi_cfg.mi_panel_id) == L9S_PANEL_PB) {
 		lhbm_ptr = qcom_smem_get(QCOM_SMEM_HOST_ANY, SMEM_SW_DISPLAY_LHBM_TABLE, &item_size);
 		if (!IS_ERR(lhbm_ptr) && item_size > 0) {
-			DSI_INFO("lhbm data size %d\n", item_size);
+			DISP_INFO("lhbm data size %d\n", item_size);
 			memcpy(mi_cfg->lhbm_rgb_param, lhbm_ptr, item_size);
 			for (i = 1; i < item_size; i += 2) {
 				tmp = ((mi_cfg->lhbm_rgb_param[i-1]) << 8) | mi_cfg->lhbm_rgb_param[i];
-				DSI_INFO("index %d = 0x%04X\n", i, tmp);
+				DISP_INFO("index %d = 0x%04X\n", i, tmp);
 				if (tmp == 0x0000) {
-					DSI_INFO("uefi read lhbm data failed, need kernel read!\n");
+					DISP_INFO("uefi read lhbm data failed, need kernel read!\n");
 					mi_cfg->uefi_read_lhbm_success = false;
 					break;
 				} else {
@@ -159,6 +171,15 @@ static void mi_dsi_panel_parse_flat_config(struct dsi_panel *panel)
 	} else {
 		DISP_DEBUG("mi,flat-update-flag is undefined\n");
 	}
+
+	mi_cfg->flat_update_gamma_zero = utils->read_bool(utils->data,
+					"mi,flat-need-update-gamma-zero");
+	if (mi_cfg->flat_update_gamma_zero) {
+		DISP_INFO("mi,flat-need-update-gamma-zero is defined\n");
+	} else {
+		DISP_DEBUG("mi,flat-need-update-gamma-zero is undefined\n");
+	}
+
 }
 
 static int mi_dsi_panel_parse_dc_config(struct dsi_panel *panel)
@@ -166,14 +187,29 @@ static int mi_dsi_panel_parse_dc_config(struct dsi_panel *panel)
 	int rc = 0;
 	struct dsi_parser_utils *utils = &panel->utils;
 	struct mi_dsi_panel_cfg *mi_cfg = &panel->mi_cfg;
+	const char *string;
 
-	rc = utils->read_u32(utils->data, "mi,mdss-dsi-panel-dc-type", &mi_cfg->dc_type);
-	if (rc) {
-		mi_cfg->dc_type = 1;
-		DISP_INFO("default dc backlight type is %d\n", mi_cfg->dc_type);
-	} else {
-		DISP_INFO("dc backlight type %d \n", mi_cfg->dc_type);
+	mi_cfg->dc_feature_enable = utils->read_bool(utils->data, "mi,dc-feature-enabled");
+	if (!mi_cfg->dc_feature_enable) {
+		DISP_DEBUG("mi,dc-feature-enabled not defined\n");
+		return rc;
 	}
+	DISP_INFO("mi,dc-feature-enabled is defined\n");
+
+	rc = utils->read_string(utils->data, "mi,dc-feature-type", &string);
+	if (rc){
+		DISP_ERROR("mi,dc-feature-type not defined!\n");
+		return -EINVAL;
+	}
+	if (!strcmp(string, "lut_compatible_backlight")) {
+		mi_cfg->dc_type = TYPE_LUT_COMPATIBLE_BL;
+	} else if (!strcmp(string, "crc_skip_backlight")) {
+		mi_cfg->dc_type = TYPE_CRC_SKIP_BL;
+	} else {
+		DISP_ERROR("No valid mi,dc-feature-type string\n");
+		return -EINVAL;
+	}
+	DISP_INFO("mi, dc type is %s\n", string);
 
 	mi_cfg->dc_update_flag = utils->read_bool(utils->data, "mi,dc-update-flag");
 	if (mi_cfg->dc_update_flag) {
@@ -181,6 +217,7 @@ static int mi_dsi_panel_parse_dc_config(struct dsi_panel *panel)
 	} else {
 		DISP_DEBUG("mi,dc-update-flag not defined\n");
 	}
+
 	rc = utils->read_u32(utils->data, "mi,mdss-dsi-panel-dc-threshold", &mi_cfg->dc_threshold);
 	if (rc) {
 		mi_cfg->dc_threshold = 440;
@@ -210,6 +247,24 @@ static int mi_dsi_panel_parse_backlight_config(struct dsi_panel *panel)
 		DISP_INFO("mi,panel-on-dimming-delay not specified\n");
 	} else {
 		DISP_INFO("mi,panel-on-dimming-delay is %d\n", mi_cfg->panel_on_dimming_delay);
+	}
+
+	mi_cfg->dimming_need_update_speed = utils->read_bool(utils->data,
+					"mi,dimming-need-update-speed");
+	if (mi_cfg->dimming_need_update_speed) {
+		DISP_INFO("mi,dimming-need-update-speed is defined\n");
+	} else {
+		DISP_INFO("mi,dimming-need-update-speed is undefined\n");
+	}
+
+	rc = utils->read_u32_array(utils->data, "mi,dimming-node",
+			mi_cfg->dimming_node, 5);
+	if (rc) {
+		DISP_INFO("mi,dimming-node is undefined\n");
+	} else {
+		DISP_INFO("mi,dimming-node is %d,%d,%d,%d,%d\n", mi_cfg->dimming_node[0],
+				mi_cfg->dimming_node[1], mi_cfg->dimming_node[2],
+				mi_cfg->dimming_node[3], mi_cfg->dimming_node[4]);
 	}
 
 	rc = utils->read_u32(utils->data, "mi,doze-hbm-dbv-level", &mi_cfg->doze_hbm_dbv_level);
@@ -249,7 +304,7 @@ static int mi_dsi_panel_parse_backlight_config(struct dsi_panel *panel)
 	rc = utils->read_u32(utils->data, "mi,mdss-dsi-fac-bl-max-level", &val);
 	if (rc) {
 		rc = 0;
-		DSI_DEBUG("[%s] factory bl-max-level unspecified\n", panel->name);
+		DISP_DEBUG("[%s] factory bl-max-level unspecified\n", panel->name);
 	} else {
 		panel->bl_config.bl_max_level = val;
 	}
@@ -257,7 +312,7 @@ static int mi_dsi_panel_parse_backlight_config(struct dsi_panel *panel)
 	rc = utils->read_u32(utils->data, "mi,mdss-fac-brightness-max-level",&val);
 	if (rc) {
 		rc = 0;
-		DSI_DEBUG("[%s] factory brigheness-max-level unspecified\n", panel->name);
+		DISP_DEBUG("[%s] factory brigheness-max-level unspecified\n", panel->name);
 	} else {
 		panel->bl_config.brightness_max_level = val;
 	}

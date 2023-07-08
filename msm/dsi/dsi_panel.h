@@ -2,7 +2,6 @@
 /*
  * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
- * Copyright (C) 2021 XiaoMi, Inc.
  */
 
 #ifndef _DSI_PANEL_H_
@@ -35,6 +34,7 @@
 #define DSI_CMD_PPS_HDR_SIZE 7
 #define DSI_MODE_MAX 64
 
+#define DIM_PARAM 4094
 #define DSI_IS_FSC_PANEL(fsc_rgb_order) \
 		(((!strcmp(fsc_rgb_order, "fsc_rgb")) || \
 		(!strcmp(fsc_rgb_order, "fsc_rbg")) || \
@@ -44,8 +44,6 @@
 		(!strcmp(fsc_rgb_order, "fsc_grb"))))
 
 #define FSC_MODE_LABEL_SIZE	8
-
-#define DIM_PARAM 4094
 
 /*
  * Defining custom dsi msg flag.
@@ -200,6 +198,7 @@ enum esd_check_status_mode {
 
 struct drm_panel_esd_config {
 	bool esd_enabled;
+	bool esd_aod_enabled;
 
 	enum esd_check_status_mode status_mode;
 	struct dsi_panel_cmd_set offset_cmd;

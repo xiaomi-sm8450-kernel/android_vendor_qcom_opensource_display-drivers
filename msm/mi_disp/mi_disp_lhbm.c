@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2020, The Linux Foundation. All rights reserved.
- * Copyright (C) 2020 XiaoMi, Inc.
+ * Copyright (c) 2020 XiaoMi, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt)	"mi-disp-lhbm:[%s:%d] " fmt, __func__, __LINE__
@@ -25,42 +25,31 @@
 
 static struct disp_lhbm_fod *g_lhbm_fod[MI_DISP_MAX];
 
+static int mi_disp_lhbm_fod_thread_fn(void *arg);
+
 bool is_local_hbm(int disp_id)
 {
 	struct dsi_display *display = NULL;
 
-	if (disp_id == MI_DISP_PRIMARY)
-		display = mi_get_primary_dsi_display();
-	else
-		display = mi_get_secondary_dsi_display();
+	if (is_support_disp_id(disp_id)) {
+		if (disp_id == MI_DISP_PRIMARY)
+			display = mi_get_primary_dsi_display();
+		else
+			display = mi_get_secondary_dsi_display();
 
-	if (display && display->panel)
-		return display->panel->mi_cfg.local_hbm_enabled;
-	else
+		if (display && display->panel)
+			return display->panel->mi_cfg.local_hbm_enabled;
+		else
+			return false;
+	} else {
+		DISP_ERROR("unknown display id\n");
 		return false;
+	}
 }
 
 bool mi_disp_lhbm_fod_enabled(struct dsi_panel *panel)
 {
 	return panel ? panel->mi_cfg.local_hbm_enabled : false;
-}
-
-static void mi_disp_lhbm_fod_thread_priority_worker(struct kthread_work *work)
-{
-	int ret = 0;
-	struct sched_param param = { 0 };
-	struct task_struct *task = current->group_leader;
-
-	/**
-	 * this priority was found during empiric testing to have appropriate
-	 * realtime scheduling to process display updates and interact with
-	 * other real time and normal priority task
-	 */
-	param.sched_priority = 16;
-	ret = sched_setscheduler(task, SCHED_FIFO, &param);
-	if (ret)
-		pr_warn("pid:%d name:%s priority update failed: %d\n",
-			current->tgid, task->comm, ret);
 }
 
 int mi_disp_lhbm_fod_thread_create(struct disp_feature *df, int disp_id)
@@ -96,30 +85,25 @@ int mi_disp_lhbm_fod_thread_create(struct disp_feature *df, int disp_id)
 	df->d_display[disp_id].lhbm_fod_ptr = lhbm_fod;
 	lhbm_fod->display = display;
 
-	kthread_init_worker(&lhbm_fod->fod_worker);
-	kthread_init_work(&lhbm_fod->thread_priority_work, mi_disp_lhbm_fod_thread_priority_worker);
-	lhbm_fod->fod_thread = kthread_run(kthread_worker_fn,
-			&lhbm_fod->fod_worker, "disp_lhbm_fod:%d", disp_id);
-	kthread_queue_work(&lhbm_fod->fod_worker, &lhbm_fod->thread_priority_work);
+	INIT_LIST_HEAD(&lhbm_fod->event_list);
+	spin_lock_init(&lhbm_fod->spinlock);
+
+	atomic_set(&lhbm_fod->allow_tx_lhbm, 0);
+	atomic_set(&lhbm_fod->fingerprint_status, FINGERPRINT_NONE);
+	atomic_set(&lhbm_fod->last_fod_status, FOD_EVENT_MAX);
+
+	init_waitqueue_head(&lhbm_fod->fod_pending_wq);
+
+	lhbm_fod->fod_thread = kthread_run(mi_disp_lhbm_fod_thread_fn,
+			lhbm_fod, "disp_lhbm_fod:%d", disp_id);
 	if (IS_ERR(lhbm_fod->fod_thread)) {
 		DISP_ERROR("failed to create disp_fod:%d kthread\n", disp_id);
 		ret = PTR_ERR(lhbm_fod->fod_thread);
 		lhbm_fod->fod_thread = NULL;
 		goto error;
 	}
-
-	init_waitqueue_head(&lhbm_fod->fod_pending_wq);
-
-	INIT_LIST_HEAD(&lhbm_fod->work_list);
-	mutex_init(&lhbm_fod->mutex_lock);
-	spin_lock_init(&lhbm_fod->spinlock);
-
-	atomic_set(&lhbm_fod->allow_tx_lhbm, 0);
-	atomic_set(&lhbm_fod->fingerprint_status, FINGERPRINT_NONE);
-	atomic_set(&lhbm_fod->fod_work_status, FOD_WORK_DONE);
-	atomic_set(&lhbm_fod->current_fod_status, FOD_EVENT_MAX);
-	atomic_set(&lhbm_fod->unset_fod_status, FOD_EVENT_MAX);
-	atomic_set(&lhbm_fod->unset_from_touch, 0);
+	/* set realtime priority */
+	sched_set_fifo(lhbm_fod->fod_thread);
 
 	g_lhbm_fod[disp_id] = lhbm_fod;
 
@@ -145,7 +129,6 @@ int mi_disp_lhbm_fod_thread_destroy(struct disp_feature *df, int disp_id)
 	lhbm_fod = df->d_display[disp_id].lhbm_fod_ptr;
 	if (lhbm_fod) {
 		if (lhbm_fod->fod_thread) {
-			kthread_flush_worker(&lhbm_fod->fod_worker);
 			kthread_stop(lhbm_fod->fod_thread);
 			lhbm_fod->fod_thread = NULL;
 		}
@@ -162,16 +145,19 @@ int mi_disp_lhbm_fod_thread_destroy(struct disp_feature *df, int disp_id)
 
 struct disp_lhbm_fod *mi_get_disp_lhbm_fod(int disp_id)
 {
-	if (is_support_disp_id(disp_id))
+	if (is_support_disp_id(disp_id)) {
 		return g_lhbm_fod[disp_id];
-	else
+	} else {
+		DISP_ERROR("unknown display id\n");
 		return NULL;
+	}
 }
 
 int mi_disp_lhbm_fod_allow_tx_lhbm(struct dsi_display *display,
 		bool enable)
 {
 	struct disp_lhbm_fod *lhbm_fod = NULL;
+	unsigned long flags;
 
 	if (!display) {
 		DISP_ERROR("Invalid display ptr\n");
@@ -192,8 +178,26 @@ int mi_disp_lhbm_fod_allow_tx_lhbm(struct dsi_display *display,
 	if (lhbm_fod->display == display &&
 		atomic_read(&lhbm_fod->allow_tx_lhbm) != enable) {
 		atomic_set(&lhbm_fod->allow_tx_lhbm, enable);
-		DISP_INFO("%s display allow_tx_lhbm = %d\n",
-			display->display_type, enable);
+		DISP_INFO("%s display allow_tx_lhbm = %d\n", display->display_type, enable);
+		if (enable) {
+			/* If the last fod fingerprint status is that the finger is pressed
+			 * and the finger is not lifted when display off,
+			 * the display is turned on again, will restor the local hbm on */
+			spin_lock_irqsave(&lhbm_fod->spinlock, flags);
+			if (atomic_read(&lhbm_fod->fingerprint_status) == AUTH_START &&
+				atomic_read(&lhbm_fod->last_fod_status) == FOD_EVENT_DOWN &&
+				list_empty(&lhbm_fod->event_list)) {
+				spin_unlock_irqrestore(&lhbm_fod->spinlock, flags);
+				mi_disp_lhbm_fod_set_finger_event(
+					mi_get_disp_id(display->display_type),
+					FOD_EVENT_DOWN, false);
+			} else {
+				spin_unlock_irqrestore(&lhbm_fod->spinlock, flags);
+				wake_up_interruptible(&lhbm_fod->fod_pending_wq);
+				DISP_INFO("%s display wake up local disp_fod kthread\n",
+					display->display_type);
+			}
+		}
 	}
 	return 0;
 }
@@ -221,7 +225,7 @@ int mi_disp_lhbm_fod_set_fingerprint_status(struct dsi_panel *panel,
 
 	atomic_set(&lhbm_fod->fingerprint_status, fingerprint_status);
 
-	DISP_UTC_INFO("set fingerprint_status = %s\n",
+	DISP_TIME_INFO("set fingerprint_status = %s\n",
 		get_fingerprint_status_name(fingerprint_status));
 
 	return 0;
@@ -255,43 +259,10 @@ int mi_disp_lhbm_fod_update_layer_state(struct dsi_display *display,
 	return 0;
 }
 
-int mi_disp_lhbm_fod_wakeup_pending_work(struct dsi_display *display)
-{
-	struct disp_lhbm_fod *lhbm_fod = NULL;
-
-	if (!display) {
-		DISP_ERROR("Invalid display ptr\n");
-		return -EINVAL;
-	}
-	
-	if (!mi_disp_lhbm_fod_enabled(display->panel)) {
-		DISP_DEBUG("%s panel is not local hbm\n", display->display_type);
-		return 0;
-	}
-
-	lhbm_fod = mi_get_disp_lhbm_fod(mi_get_disp_id(display->display_type));
-	if (!lhbm_fod) {
-		DISP_ERROR("Invalid lhbm_fod ptr\n");
-		return -EINVAL;
-	}
-
-	if (lhbm_fod->display == display) {
-		DISP_DEBUG("%s pending_fod_cnt = %d\n",
-			display->display_type, atomic_read(&lhbm_fod->pending_fod_cnt));
-		if (atomic_read(&lhbm_fod->pending_fod_cnt)) {
-			DISP_INFO("%s display wake up local hbm fod work\n",
-				display->display_type);
-			wake_up_interruptible(&lhbm_fod->fod_pending_wq);
-		}
-	}
-
-	return 0;
-}
-
 static int mi_disp_lhbm_fod_event_notify(struct disp_lhbm_fod *lhbm_fod, int fod_status)
 {
 	struct dsi_display *display = NULL;
-	struct disp_event d_event;
+	int disp_id = MI_DISP_PRIMARY;
 	u32 fod_ui_ready = 0, refresh_rate = 0;
 	u32 ui_ready_delay_frame = 0;
 	u64 delay_us = 0;
@@ -327,13 +298,14 @@ static int mi_disp_lhbm_fod_event_notify(struct disp_lhbm_fod *lhbm_fod, int fod
 		fod_ui_ready = LOCAL_HBM_UI_NONE;
 	}
 
-	d_event.disp_id = mi_get_disp_id(display->display_type);
-	d_event.type = MI_DISP_EVENT_FOD;
-	d_event.length = sizeof(fod_ui_ready);
-	mi_disp_feature_event_notify(&d_event, (u8 *)&fod_ui_ready);
+	if (atomic_read(&lhbm_fod->allow_tx_lhbm)) {
+		disp_id = mi_get_disp_id(display->display_type);
+		mi_disp_feature_event_notify_by_type(disp_id, MI_DISP_EVENT_FOD,
+				sizeof(fod_ui_ready), fod_ui_ready);
 
-	DISP_INFO("%s display fod_ui_ready notify=%d\n",
-		display->display_type, fod_ui_ready);
+		DISP_INFO("%s display fod_ui_ready notify=%d\n",
+			display->display_type, fod_ui_ready);
+	}
 
 	return 0;
 }
@@ -371,10 +343,10 @@ static int mi_disp_lhbm_fod_get_target_brightness(struct dsi_panel *panel)
 				mi_cfg->fod_low_brightness_lux_threshold)
 				target_brightness = LHBM_TARGET_BRIGHTNESS_WHITE_110NIT;
 		} else {
-			brightness_clone = mi_cfg->real_brightness_clone;
+			brightness_clone = atomic_read(&mi_cfg->real_brightness_clone);
 			if (brightness_clone < mi_cfg->fod_low_brightness_clone_threshold
 				&& (mi_cfg->feature_val[DISP_FEATURE_SENSOR_LUX] <=
-					mi_cfg->fod_low_brightness_lux_threshold + 10)) {
+					mi_cfg->fod_low_brightness_lux_threshold)) {
 				target_brightness = LHBM_TARGET_BRIGHTNESS_WHITE_110NIT;
 			}
 		}
@@ -447,200 +419,165 @@ static int mi_disp_lhbm_fod_set_disp_param(struct disp_lhbm_fod *lhbm_fod, u32 o
 
 	mutex_unlock(&panel->panel_lock);
 
-	SDE_ATRACE_BEGIN("local_hbm_fod");
 	rc = mi_dsi_display_set_disp_param(lhbm_fod->display, &ctl);
-	SDE_ATRACE_BEGIN("local_hbm_fod");
 
 	return rc;
 }
 
-void mi_disp_lhbm_animal_status_update(struct dsi_display *display,
-		bool is_layer_exit)
+int mi_disp_lhbm_aod_to_normal_optimize(struct dsi_display *display,
+		bool enable)
 {
 	struct disp_feature_ctl ctl;
+	int rc = 0;
+
+	if (!display || !display->panel) {
+		DISP_ERROR("invalid params\n");
+		return -EINVAL;
+	}
 
 	if (!display->panel->mi_cfg.need_fod_animal_in_normal)
-		return;
+		return 0;
 
+	memset(&ctl, 0, sizeof(struct disp_feature_ctl));
 	ctl.feature_id = DISP_FEATURE_AOD_TO_NORMAL;
-	if (is_layer_exit)
-		ctl.feature_val = FEATURE_ON;
-	else
-		ctl.feature_val = FEATURE_OFF;
+	ctl.feature_val = enable ? FEATURE_ON : FEATURE_OFF;
 
-	mi_dsi_display_set_disp_param(display, &ctl);
+	rc = mi_dsi_display_set_disp_param(display, &ctl);
+
+	return rc;
 }
 
-static void mi_disp_lhbm_fod_work_handler(struct kthread_work *work)
+static bool mi_disp_lhbm_fod_thread_should_wake(struct disp_lhbm_fod *lhbm_fod)
+{
+	bool should_wake = false;
+	unsigned long flags;
+
+	spin_lock_irqsave(&lhbm_fod->spinlock, flags);
+
+	if (list_empty(&lhbm_fod->event_list) || !atomic_read(&lhbm_fod->allow_tx_lhbm))
+		should_wake = false;
+	else
+		should_wake = true;
+
+	spin_unlock_irqrestore(&lhbm_fod->spinlock, flags);
+
+	return should_wake;
+}
+
+static int mi_disp_lhbm_fod_thread_fn(void *arg)
 {
 	int rc = 0;
-	struct lhbm_fod_work *fod_work = container_of(work, struct lhbm_fod_work, work);
-	struct disp_lhbm_fod *lhbm_fod = fod_work->lhbm_fod;
-	int fod_status = FOD_EVENT_MAX;
+	struct disp_lhbm_fod *lhbm_fod = (struct disp_lhbm_fod *)arg;
+	struct lhbm_fod_event *entry = NULL, *temp = NULL;
+	struct lhbm_fod_event fod_event;
+	unsigned long flag = 0;
 	u32 op_code;
 
-	DISP_INFO("fod_work_handler --- start\n");
-
-	mutex_lock(&lhbm_fod->mutex_lock);
-	atomic_set(&lhbm_fod->fod_work_status, FOD_WORK_DOING);
-
-	DISP_INFO("from_touch(%d), fod_status(%d)\n",
-			fod_work->from_touch, fod_work->fod_status);
-
-	spin_lock(&lhbm_fod->spinlock);
-	if (!atomic_read(&lhbm_fod->allow_tx_lhbm)) {
-		atomic_inc(&lhbm_fod->pending_fod_cnt);
-		spin_unlock(&lhbm_fod->spinlock);
-		mutex_unlock(&lhbm_fod->mutex_lock);
-
-		DISP_INFO("wait until sde connector bridge enable\n");
+	while (!kthread_should_stop()) {
 		rc = wait_event_interruptible(lhbm_fod->fod_pending_wq,
-				atomic_read(&lhbm_fod->allow_tx_lhbm));
+				mi_disp_lhbm_fod_thread_should_wake(lhbm_fod));
 		if (rc) {
-			/* Some event woke us up, so let's quit */
-			DISP_INFO("wait_event_interruptible rc = %d\n", rc);
-			spin_lock(&lhbm_fod->spinlock);
-			atomic_add_unless(&lhbm_fod->pending_fod_cnt, -1, 0);
-			atomic_set(&lhbm_fod->fod_work_status, FOD_WORK_DONE);
-			list_del_init(&fod_work->node);
-			spin_unlock(&lhbm_fod->spinlock);
-			goto exit;
+			/* Some event woke us up */
+			DISP_WARN("wait_event_interruptible rc = %d\n", rc);
+			continue;
 		}
 
-		mutex_lock(&lhbm_fod->mutex_lock);
-		spin_lock(&lhbm_fod->spinlock);
-		atomic_add_unless(&lhbm_fod->pending_fod_cnt, -1, 0);
-		/* only update newest status when panel is off */
-		if (atomic_read(&lhbm_fod->unset_fod_status) != FOD_EVENT_MAX) {
-			if (atomic_read(&lhbm_fod->current_fod_status) !=
-				atomic_read(&lhbm_fod->unset_fod_status)) {
-				DISP_INFO("unset_fod_status = %d, fod_status = %d\n",
-					atomic_read(&lhbm_fod->unset_fod_status),
-					fod_work->fod_status);
-				fod_work->fod_status = atomic_read(&lhbm_fod->unset_fod_status);
-				atomic_set(&lhbm_fod->unset_fod_status, FOD_EVENT_MAX);
-				atomic_set(&lhbm_fod->unset_from_touch, 0);
+		spin_lock_irqsave(&lhbm_fod->spinlock, flag);
+		entry = list_last_entry(&lhbm_fod->event_list, struct lhbm_fod_event, link);
+		DISP_INFO("from_touch(%d), fod_status(%d)\n", entry->from_touch, entry->fod_status);
+		memcpy(&fod_event, entry, sizeof(fod_event));
+		list_for_each_entry_safe(entry, temp, &lhbm_fod->event_list, link) {
+			DISP_DEBUG("in list, from_touch(%d), fod_status(%d)\n",
+					entry->from_touch, entry->fod_status);
+			list_del(&entry->link);
+			kfree(entry);
+		}
+		if (atomic_read(&lhbm_fod->last_fod_status) != fod_event.fod_status ||
+			(!fod_event.from_touch && fod_event.fod_status == FOD_EVENT_DOWN)) {
+			atomic_set(&lhbm_fod->last_fod_status, fod_event.fod_status);
+			if (fod_event.fod_status == FOD_EVENT_DOWN) {
+				op_code = MI_FOD_HBM_ON;
 			} else {
-				DISP_INFO("current/unset_fod_status = %d, fod_status = %d, skip\n",
-					atomic_read(&lhbm_fod->unset_fod_status),
-					fod_work->fod_status);
-				atomic_set(&lhbm_fod->unset_fod_status, FOD_EVENT_MAX);
-				atomic_set(&lhbm_fod->unset_from_touch, 0);
-				list_del_init(&fod_work->node);
-				spin_unlock(&lhbm_fod->spinlock);
-				mutex_unlock(&lhbm_fod->mutex_lock);
-				goto exit;
+				op_code = MI_FOD_HBM_OFF;
 			}
+			spin_unlock_irqrestore(&lhbm_fod->spinlock, flag);
+
+			if (fod_event.fod_status == FOD_EVENT_UP) {
+				mi_disp_lhbm_fod_event_notify(lhbm_fod, FOD_EVENT_UP);
+			}
+
+			rc = mi_disp_lhbm_fod_set_disp_param(lhbm_fod, op_code);
+			if (rc) {
+				DISP_ERROR("lhbm_fod failed to set_disp_param, rc = %d\n", rc);
+			} else if (fod_event.fod_status == FOD_EVENT_DOWN) {
+				mi_disp_lhbm_fod_event_notify(lhbm_fod, FOD_EVENT_DOWN);
+			}
+		} else{
+			spin_unlock_irqrestore(&lhbm_fod->spinlock, flag);
+			DISP_INFO("same fod event: %d, return\n", fod_event.fod_status);
 		}
 	}
 
-	atomic_set(&lhbm_fod->current_fod_status, fod_work->fod_status);
-	list_del_init(&fod_work->node);
-	if (atomic_read(&lhbm_fod->current_fod_status) == FOD_EVENT_DOWN) {
-		op_code = MI_FOD_HBM_ON;
-		fod_status = FOD_EVENT_DOWN;
-	} else {
-		op_code = MI_FOD_HBM_OFF;
-		fod_status = FOD_EVENT_UP;
-	}
-	spin_unlock(&lhbm_fod->spinlock);
-
-	if (fod_status == FOD_EVENT_UP) {
-		mi_disp_lhbm_fod_event_notify(lhbm_fod, FOD_EVENT_UP);
-	}
-
-	rc = mi_disp_lhbm_fod_set_disp_param(lhbm_fod, op_code);
-	if (rc) {
-		DISP_ERROR("lhbm_fod failed to set_disp_param, rc = %d\n", rc);
-	} else if (fod_status == FOD_EVENT_DOWN) {
-		mi_disp_lhbm_fod_event_notify(lhbm_fod, FOD_EVENT_DOWN);
-	}
-
-	atomic_set(&lhbm_fod->fod_work_status, FOD_WORK_DONE);
-	mutex_unlock(&lhbm_fod->mutex_lock);
-
-	DISP_INFO("fod_work_handler --- end\n");
-
-exit:
-	kfree(fod_work);
+	return 0;
 }
 
-int mi_disp_set_fod_queue_work(u32 fod_status, bool from_touch)
+int mi_disp_lhbm_fod_set_finger_event(int disp_id, u32 fod_status, bool from_touch)
 {
-	struct disp_lhbm_fod *lhbm_fod = mi_get_disp_lhbm_fod(MI_DISP_PRIMARY);
-	struct dsi_display *display = mi_get_primary_dsi_display();
-	struct lhbm_fod_work *fod_work = NULL, *entry = NULL;
+	struct disp_lhbm_fod *lhbm_fod = mi_get_disp_lhbm_fod(disp_id);
+	struct lhbm_fod_event *fod_event = NULL, *entry = NULL;
 	unsigned long flags;
+	int fingerprint_status = FINGERPRINT_NONE;
 	int rc = 0;
 
 #ifdef DISPLAY_FACTORY_BUILD
 	return 0;
 #endif
 
-	if (!display) {
-		DISP_ERROR("invalid display ptr\n");
-		return -EINVAL;
-	}
-
-	if (!mi_disp_lhbm_fod_enabled(display->panel)) {
-		DISP_DEBUG("%s panel is not local hbm\n", display->display_type);
+	if (!is_local_hbm(disp_id)) {
+		DISP_DEBUG("%s panel is not local hbm\n", get_disp_id_name(disp_id));
 		return 0;
 	}
 
-	if (!lhbm_fod || lhbm_fod->display != display) {
+	if (!lhbm_fod) {
 		DISP_ERROR("invalid lhbm_fod ptr\n");
 		return -EINVAL;
 	}
 
-	DISP_INFO("start: from_touch(%d), fod_status(%d)\n", from_touch, fod_status);
-
 	spin_lock_irqsave(&lhbm_fod->spinlock, flags);
-	if (atomic_read(&lhbm_fod->pending_fod_cnt)) {
-		DISP_INFO("pending event: current_fod_status(%d), new fod_status(%d), skip\n",
-			atomic_read(&lhbm_fod->current_fod_status), fod_status);
-		atomic_set(&lhbm_fod->unset_fod_status, fod_status);
-		atomic_set(&lhbm_fod->unset_from_touch, from_touch);
-		goto exit;
-	} else {
-		if (!list_empty(&lhbm_fod->work_list)) {
-			entry = list_last_entry(&lhbm_fod->work_list,
-					struct lhbm_fod_work, node);
-			if (entry->fod_status == fod_status &&
-				entry->from_touch == from_touch) {
-				DISP_INFO("same event: equal to the last member in list,"
-					"from_touch(%d), fod_status(%d), skip\n",
-					from_touch, fod_status);
-				goto exit;
-			}
+
+	fingerprint_status = atomic_read(&lhbm_fod->fingerprint_status);
+	if (fingerprint_status == ENROLL_STOP ||
+		fingerprint_status == AUTH_STOP ||
+		fingerprint_status == HEART_RATE_STOP) {
+		if (fod_status == FOD_EVENT_DOWN) {
+			DISP_ERROR("fingerprint_status[%s], skip FOD_EVENT_DOWN\n",
+				get_fingerprint_status_name(fingerprint_status));
+			goto exit;
 		}
 	}
 
-	fod_work = kzalloc(sizeof(struct lhbm_fod_work), GFP_ATOMIC);
-	if (!fod_work) {
-		DISP_ERROR("failed to allocate memory\n");
+	fod_event = kzalloc(sizeof(struct lhbm_fod_event), GFP_ATOMIC);
+	if (!fod_event) {
+		DISP_ERROR("failed to allocate memory for fod_event\n");
 		rc = ENOMEM;
 		goto exit;
 	}
 
-	fod_work->lhbm_fod = lhbm_fod;
-	fod_work->dsi_display = display;
-	kthread_init_work(&fod_work->work, mi_disp_lhbm_fod_work_handler);
-	fod_work->wq = &lhbm_fod->fod_pending_wq;
-	fod_work->from_touch = from_touch;
-	fod_work->fod_status = fod_status;
-	INIT_LIST_HEAD(&fod_work->node);
-	list_add_tail(&fod_work->node, &lhbm_fod->work_list);
+	fod_event->from_touch = from_touch;
+	fod_event->fod_status = fod_status;
+	INIT_LIST_HEAD(&fod_event->link);
+	list_add_tail(&fod_event->link, &lhbm_fod->event_list);
 
-	list_for_each_entry(entry, &lhbm_fod->work_list, node) {
+	list_for_each_entry(entry, &lhbm_fod->event_list, link) {
 		DISP_DEBUG("in list, from_touch(%d), fod_status(%d)\n",
-			entry->from_touch, entry->fod_status);
+				entry->from_touch, entry->fod_status);
 	}
 
-	DISP_UTC_INFO("queue_work: from_touch(%d), fod_status(%d)\n", from_touch, fod_status);
-	kthread_queue_work(&lhbm_fod->fod_worker, &fod_work->work);
+	DISP_TIME_INFO("from_touch(%d), fod_status(%d)\n", from_touch, fod_status);
+	wake_up_interruptible(&lhbm_fod->fod_pending_wq);
 
 exit:
 	spin_unlock_irqrestore(&lhbm_fod->spinlock, flags);
 	return rc;
 }
-EXPORT_SYMBOL_GPL(mi_disp_set_fod_queue_work);
+EXPORT_SYMBOL_GPL(mi_disp_lhbm_fod_set_finger_event);

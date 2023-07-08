@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2020, The Linux Foundation. All rights reserved.
- * Copyright (C) 2020 XiaoMi, Inc.
+ * Copyright (c) 2020 XiaoMi, Inc. All rights reserved.
  */
 
 #ifndef _MI_DISP_LHBM_H_
@@ -16,11 +16,6 @@
 #include "dsi_display.h"
 #include "mi_disp_feature.h"
 #include "mi_sde_connector.h"
-
-enum {
-	FOD_WORK_DONE = 0,
-	FOD_WORK_DOING = 1,
-};
 
 enum {
 	FOD_EVENT_UP = 0,
@@ -54,40 +49,26 @@ enum fod_ui_ready_state {
 struct disp_lhbm_fod {
 	struct dsi_display *display;
 
-	struct kthread_worker fod_worker;
 	struct task_struct *fod_thread;
 	wait_queue_head_t fod_pending_wq;
-	atomic_t pending_fod_cnt;
-	struct kthread_work thread_priority_work;
 
-	struct list_head work_list;
-	struct mutex mutex_lock;
+	struct list_head event_list;
 	spinlock_t spinlock;
 
 	atomic_t allow_tx_lhbm;
 	atomic_t fingerprint_status;
-
-	atomic_t fod_work_status;
-	atomic_t current_fod_status;
-	atomic_t unset_fod_status;
-	atomic_t unset_from_touch;
+	atomic_t last_fod_status;
 
 	struct mi_layer_flags layer_flags;
 
 	int target_brightness;
 };
 
-struct lhbm_fod_work {
-	struct disp_lhbm_fod *lhbm_fod;
-	struct dsi_display *dsi_display;
-
-	struct kthread_work work;
-	wait_queue_head_t *wq;
-
+struct lhbm_fod_event {
 	bool from_touch;
 	int fod_status;
 
-	struct list_head node;
+	struct list_head link;
 };
 
 bool is_local_hbm(int disp_id);
@@ -97,13 +78,11 @@ int mi_disp_lhbm_fod_thread_destroy(struct disp_feature *df, int disp_id);
 struct disp_lhbm_fod *mi_get_disp_lhbm_fod(int disp_id);
 int mi_disp_lhbm_fod_set_fingerprint_status(struct dsi_panel *panel,
 		int fingerprint_status);
-int mi_disp_lhbm_fod_wakeup_pending_work(struct dsi_display *display);
 int mi_disp_lhbm_fod_allow_tx_lhbm(struct dsi_display *display, bool enable);
 int mi_disp_lhbm_fod_update_layer_state(struct dsi_display *display,
 		struct mi_layer_flags flags);
-void mi_disp_lhbm_animal_status_update(struct dsi_display *display,
-		bool is_layer_exit);
-int mi_disp_set_fod_queue_work(u32 fod_status, bool from_touch);
+int mi_disp_lhbm_aod_to_normal_optimize(struct dsi_display *display,
+		bool enable);
+int mi_disp_lhbm_fod_set_finger_event(int disp_id, u32 fod_status, bool from_touch);
 
 #endif /* _MI_DISP_LHBM_H_ */
-

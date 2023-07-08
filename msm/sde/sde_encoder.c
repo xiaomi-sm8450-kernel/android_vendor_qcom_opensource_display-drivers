@@ -2291,7 +2291,7 @@ static int _sde_encoder_rc_early_wakeup(struct drm_encoder *drm_enc,
 			kthread_mod_delayed_work(&disp_thread->worker,
 					&sde_enc->delayed_off_work,
 					msecs_to_jiffies(
-					delay_ms));
+					IDLE_POWERCOLLAPSE_DURATION));
 			idle_pc_duration = IDLE_POWERCOLLAPSE_DURATION;
 		}
 
@@ -2680,6 +2680,7 @@ static void sde_encoder_virt_mode_set(struct drm_encoder *drm_enc,
 	kthread_cancel_delayed_work_sync(&sde_enc->delayed_off_work);
 
 	/* release resources before seamless mode change */
+	msm_mode = &c_state->msm_mode;
 	ret = sde_encoder_virt_modeset_rc(drm_enc, adj_mode, msm_mode, true);
 	if (ret)
 		return;
@@ -4617,13 +4618,10 @@ int sde_encoder_prepare_for_kickoff(struct drm_encoder *drm_enc,
 	is_cmd_mode = sde_encoder_check_curr_mode(drm_enc,
 				MSM_DISPLAY_CMD_MODE);
 	if (sde_enc->cur_master && sde_enc->cur_master->connector
-			&& is_cmd_mode) {
+			&& is_cmd_mode)
 		sde_enc->frame_trigger_mode = sde_connector_get_property(
 			sde_enc->cur_master->connector->state,
 			CONNECTOR_PROP_CMD_FRAME_TRIGGER_MODE);
-		if (sde_enc->frame_trigger_mode != FRAME_DONE_WAIT_POSTED_START)
-			sde_enc->frame_trigger_mode = FRAME_DONE_WAIT_POSTED_START;
-	}
 
 	_sde_encoder_helper_hdr_plus_mempool_update(sde_enc);
 

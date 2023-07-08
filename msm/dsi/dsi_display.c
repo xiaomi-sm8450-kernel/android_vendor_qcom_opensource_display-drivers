@@ -2,7 +2,6 @@
 /*
  * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
- * Copyright (C) 2021 XiaoMi, Inc.
  */
 
 #include <linux/list.h>
@@ -25,6 +24,7 @@
 #include "sde_dbg.h"
 #include "dsi_parser.h"
 #include "sde_trace.h"
+#include "sde_encoder.h"
 
 #include "mi_disp_feature.h"
 #include "mi_dsi_display.h"
@@ -305,13 +305,24 @@ int dsi_display_set_backlight(struct drm_connector *connector,
 		if (bl_temp && (bl_temp < panel->bl_config.bl_min_level))
 			bl_temp = panel->bl_config.bl_min_level;
 	} else {
-		/* use bl_temp as index of dimming bl lut to find the dimming panel backlight */
-		if (bl_temp != 0 && panel->bl_config.dimming_bl_lut &&
-	    		bl_temp < bl_max + 1) {
-			bl_temp = (u32)(DIM_PARAM * bl_lvl) / (bl_lvl + bl_max);
+		if (panel->bl_config.dimming_bl_lut) {
+			if (bl_temp != 0 && bl_temp < bl_max + 1) {
+				bl_temp = (u32)(DIM_PARAM * bl_lvl) / (bl_lvl + bl_max);
+			}
+			if (bl_temp && (bl_temp < panel->bl_config.dimming_min_bl))
+                        	bl_temp = panel->bl_config.dimming_min_bl;
+		} else {
+			DSI_DEBUG("factory build enter: dimming enable :%d, bl_temp = %u\n", panel->bl_config.dimming_enabled, (u32)bl_temp);
+			/* scale backlight */
+			bl_scale = panel->bl_config.bl_scale;
+			bl_temp = panel->bl_config.bl_level * bl_scale / MAX_BL_SCALE_LEVEL;
+
+			bl_scale_sv = panel->bl_config.bl_scale_sv;
+			bl_temp = (u32)bl_temp * bl_scale_sv / MAX_SV_BL_SCALE_LEVEL;
+
+			if (bl_temp && (bl_temp < panel->bl_config.bl_min_level))
+				bl_temp = panel->bl_config.bl_min_level;
 		}
-		if (bl_temp && (bl_temp < panel->bl_config.dimming_min_bl))
-                        bl_temp = panel->bl_config.dimming_min_bl;
 	}
 
 	if (bl_temp > panel->bl_config.bl_max_level)
@@ -843,14 +854,6 @@ static int dsi_display_read_status(struct dsi_display_ctrl *ctrl,
 		cmds[i].msg.rx_len = config->status_cmds_rlen[i];
 		cmds[i].ctrl_flags = flags;
 		dsi_display_set_cmd_tx_ctrl_flags(display,&cmds[i]);
-
-		if (mi_get_panel_id(display->panel->mi_cfg.mi_panel_id) == L3_PANEL_PA) {
-			if (*((u8 *)cmds[i].msg.tx_buf) == 0xBA) {
-				mi_dsi_panel_switch_page_locked(panel, 2);
-				DSI_DEBUG("[esd debug]:switch to page 2\n");
-			}
-		}
-
 		rc = dsi_ctrl_transfer_prepare(ctrl->ctrl, cmds[i].ctrl_flags);
 		if (rc) {
 			DSI_ERR("prepare for rx cmd transfer failed rc=%d\n", rc);
@@ -867,13 +870,6 @@ static int dsi_display_read_status(struct dsi_display_ctrl *ctrl,
 		}
 
 		dsi_ctrl_transfer_unprepare(ctrl->ctrl, cmds[i].ctrl_flags);
-
-		if (mi_get_panel_id(display->panel->mi_cfg.mi_panel_id) == L3_PANEL_PA) {
-			if (*((u8 *)cmds[i].msg.tx_buf) == 0xBA) {
-				mi_dsi_panel_switch_page_locked(panel, 0);
-				DSI_DEBUG("[esd debug]:switch to page 0\n");
-			}
-		}
 	}
 
 	return rc;
@@ -1066,21 +1062,22 @@ int dsi_display_check_status(struct drm_connector *connector, void *display,
 			(panel->panel_mode == DSI_OP_VIDEO_MODE))
 		te_rechecks = 0;
 
-	if (status_mode == ESD_MODE_REG_READ) {
-		esd = &(panel->esd_config);
-		if (esd->offset_cmd.count != 0) {
-			rc = mi_dsi_panel_write_cmd_set(dsi_display->panel, &esd->offset_cmd);
-			DSI_DEBUG("wirte esd reg offset command rc = %d\n", rc);
-		}
-	}
+
 	dsi_display_set_ctrl_esd_check_flag(dsi_display, true);
 
+	mi_dsi_acquire_wakelock(dsi_display->panel);
 	dsi_display_clk_ctrl(dsi_display->dsi_clk_handle, DSI_ALL_CLKS, DSI_CLK_ON);
 
 	/* Disable error interrupts while doing an ESD check */
 	dsi_display_toggle_error_interrupt_status(dsi_display, false);
 
 	if (status_mode == ESD_MODE_REG_READ) {
+		esd = &(panel->esd_config);
+		if (esd->offset_cmd.count != 0) {
+			rc = mi_dsi_panel_write_cmd_set(dsi_display->panel, &esd->offset_cmd);
+			DSI_DEBUG("wirte esd reg offset command rc = %d\n", rc);
+		}
+
 		rc = dsi_display_status_reg_read(dsi_display);
 	} else if (status_mode == ESD_MODE_SW_BTA) {
 		rc = dsi_display_status_bta_request(dsi_display);
@@ -1109,6 +1106,7 @@ int dsi_display_check_status(struct drm_connector *connector, void *display,
 		dsi_display_toggle_error_interrupt_status(dsi_display, true);
 
 	dsi_display_clk_ctrl(dsi_display->dsi_clk_handle, DSI_ALL_CLKS, DSI_CLK_OFF);
+	mi_dsi_release_wakelock(dsi_display->panel);
 release_panel_lock:
 	dsi_panel_release_panel_lock(panel);
 	SDE_EVT32(SDE_EVTLOG_FUNC_EXIT, rc);
@@ -1449,7 +1447,7 @@ int dsi_display_set_power(struct drm_connector *connector,
 
 	mutex_lock(&display->panel->mi_cfg.doze_lock);
 
-	DISP_UTC_INFO("Display (%s), Power mode (%s)\n", display->display_type,
+	DISP_TIME_INFO("Display (%s), Power mode (%s)\n", display->display_type,
 			get_display_power_mode_name(power_mode));
 
 	switch (power_mode) {
@@ -3553,10 +3551,10 @@ int dsi_host_transfer_sub(struct mipi_dsi_host *host, struct dsi_cmd_desc *cmd)
 		}
 	}
 
-	dsi_display_set_cmd_tx_ctrl_flags(display, cmd);
-
 	if (cmd->msg.type == MIPI_DSI_DCS_READ)
 		cmd->ctrl_flags |= DSI_CTRL_CMD_READ;
+
+	dsi_display_set_cmd_tx_ctrl_flags(display, cmd);
 
 	mi_dsi_print_51_backlight_log(display->panel, cmd);
 
@@ -7901,7 +7899,7 @@ int dsi_display_set_mode(struct dsi_display *display,
 			adj_mode.priv_info->clk_rate_hz);
 
 	if (timing.h_skew) {
-		DISP_UTC_INFO("-------------- ddic %d fps\n", timing.h_skew);
+		DISP_TIME_INFO("-------------- ddic %d fps\n", timing.h_skew);
 		mi_disp_feature_event_notify_by_type(mi_get_disp_id(display->display_type),
 			MI_DISP_EVENT_FPS, sizeof(timing.h_skew), timing.h_skew);
 
@@ -7909,7 +7907,8 @@ int dsi_display_set_mode(struct dsi_display *display,
 			mi_disp_feature_sysfs_notify(mi_get_disp_id(display->display_type),
 				MI_SYSFS_DYNAMIC_FPS);
 		}
-    } else {
+
+	} else {
 		mi_disp_feature_event_notify_by_type(mi_get_disp_id(display->display_type),
 			MI_DISP_EVENT_FPS, sizeof(timing.refresh_rate), timing.refresh_rate);
 
@@ -8711,8 +8710,9 @@ int dsi_display_enable(struct dsi_display *display)
 	int rc = 0;
 	struct dsi_display_mode *mode;
 	char trace_buf[64];
+	struct sde_connector *c_conn;
 
-	if (!display || !display->panel) {
+	if (!display || !display->panel || !display->drm_conn) {
 		DSI_ERR("Invalid params\n");
 		return -EINVAL;
 	}
@@ -8721,6 +8721,9 @@ int dsi_display_enable(struct dsi_display *display)
 		DSI_ERR("no valid mode set for the display\n");
 		return -EINVAL;
 	}
+
+	c_conn = to_sde_connector(display->drm_conn);
+
 	SDE_EVT32(SDE_EVTLOG_FUNC_ENTRY);
 
 	/*
@@ -8739,26 +8742,22 @@ int dsi_display_enable(struct dsi_display *display)
 		}
 
 		display->panel->panel_initialized = true;
-		DSI_DEBUG("cont splash enabled, display enable not required\n");
+		display->panel->power_mode = SDE_MODE_DPMS_ON;
+		DSI_INFO("cont splash enabled, display enable not required\n");
 		dsi_display_panel_id_notification(display);
 
-		rc = mi_dsi_panel_read_and_update_dc_param(display->panel);
-		if (rc) {
-			DSI_ERR("[%s] failed to read DC param, rc=%d\n",
-				display->name, rc);
-		}
-
-		rc = mi_dsi_panel_read_and_update_flat_param(display->panel);
-		if (rc) {
-			DSI_ERR("[%s] failed to read flat param, rc=%d\n",
-				display->name, rc);
-		}
-
-		if (mi_get_panel_id(display->panel->mi_cfg.mi_panel_id) == L3_PANEL_PA) {
+		if (mi_get_panel_id_by_dsi_panel(display->panel) == L3_PANEL_PA ||
+			mi_get_panel_id_by_dsi_panel(display->panel) == L3S_PANEL_PA) {
 			if (!display->panel->mi_cfg.uefi_read_lhbm_success) {
 				DSI_INFO("uefi_read_lhbm_success is false, read in kernel.\n");
 				mi_dsi_panel_read_lhbm_white_param(display->panel);
 			}
+		}
+
+		if (mi_get_panel_id_by_dsi_panel(display->panel) == L1_PANEL_PA ||
+			mi_get_panel_id_by_dsi_panel(display->panel) == L18_PANEL_PA ||
+			mi_get_panel_id_by_dsi_panel(display->panel) == L18_PANEL_SA) {
+			mi_dsi_display_manufacturer_info_init(display);
 		}
 
 		return 0;
@@ -8769,12 +8768,7 @@ int dsi_display_enable(struct dsi_display *display)
 	mode = display->panel->cur_mode;
 
 	if (mode->dsi_mode_flags & DSI_MODE_FLAG_DMS) {
-		snprintf(trace_buf, sizeof(trace_buf), "dsi_panel_post_switch:%dx%dx%d:%d",
-			mode->timing.h_active, mode->timing.v_active,
-			mode->timing.refresh_rate, mode->timing.h_skew);
-		SDE_ATRACE_BEGIN(trace_buf);
 		rc = dsi_panel_post_switch(display->panel);
-		SDE_ATRACE_END(trace_buf);
 		if (rc) {
 			DSI_ERR("[%s] failed to switch DSI panel mode, rc=%d\n",
 				   display->name, rc);
@@ -8801,12 +8795,34 @@ int dsi_display_enable(struct dsi_display *display)
 		}
 	}
 
+	if (!is_target_fps_support_dc(display->panel)) {
+		if (display->panel->mi_cfg.real_dc_state == FEATURE_ON) {
+			mi_dsi_panel_set_dc_mode(display->panel, false);
+			DSI_INFO("turn off DC mode\n");
+		}
+	} else {
+		if (display->panel->mi_cfg.feature_val[DISP_FEATURE_DC] == FEATURE_ON &&
+			display->panel->mi_cfg.real_dc_state == FEATURE_OFF) {
+			mi_dsi_panel_set_dc_mode(display->panel, true);
+			DSI_INFO("turn on DC mode\n");
+		}
+	}
+
 	if (mode->dsi_mode_flags & DSI_MODE_FLAG_DMS) {
+		if (mode->timing.h_skew)
+			SDE_ATRACE_INT("ddic_fps", mode->timing.h_skew);
+		else
+			SDE_ATRACE_INT("ddic_fps", mode->timing.refresh_rate);
 		snprintf(trace_buf, sizeof(trace_buf), "dsi_panel_switch:%dx%dx%d:%d",
 			mode->timing.h_active, mode->timing.v_active,
 			mode->timing.refresh_rate, mode->timing.h_skew);
 		SDE_ATRACE_BEGIN(trace_buf);
 		rc = dsi_panel_switch(display->panel);
+
+		if (mi_get_panel_id_by_dsi_panel(display->panel) == L9S_PANEL_PA ||
+			mi_get_panel_id_by_dsi_panel(display->panel) == L9S_PANEL_PB)
+			sde_encoder_wait_for_event(c_conn->encoder,MSM_ENC_VBLANK);
+
 		SDE_ATRACE_END(trace_buf);
 		if (rc)
 			DSI_ERR("[%s] failed to switch DSI panel mode, rc=%d\n",
@@ -9173,6 +9189,10 @@ int dsi_display_unprepare(struct dsi_display *display)
 	dsi_display_ctrl_isr_configure(display, false);
 
 	if (!display->poms_pending && !is_skip_op_required(display)) {
+		if (mi_get_panel_id(display->panel->mi_cfg.mi_panel_id) == L3_PANEL_PA ||
+			mi_get_panel_id(display->panel->mi_cfg.mi_panel_id) == L3S_PANEL_PA) {
+			usleep_range(1000, 1010);
+		}
 		rc = dsi_panel_post_unprepare(display->panel);
 		if (rc)
 			DSI_ERR("[%s] panel post-unprepare failed, rc=%d\n",

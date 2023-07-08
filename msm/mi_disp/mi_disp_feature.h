@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2020, The Linux Foundation. All rights reserved.
- * Copyright (C) 2020 XiaoMi, Inc.
+ * Copyright (c) 2020 XiaoMi, Inc. All rights reserved.
  */
 
 #ifndef _MI_DISP_FEATURE_H_
@@ -31,24 +31,25 @@ enum disp_intf_type {
 
 struct disp_work {
 	struct kthread_work work;
+	struct disp_display *dd_ptr;
+	wait_queue_head_t *wq;
+	void *data;
+};
+
+struct disp_delayed_work {
 	struct kthread_delayed_work delayed_work;
 	struct disp_display *dd_ptr;
 	wait_queue_head_t *wq;
 	void *data;
 };
 
-struct disp_thread {
-	struct task_struct *thread;
-	struct kthread_worker worker;
-	struct disp_display *dd_ptr;
-};
-
 struct disp_display {
 	struct device *dev;
 	void *display;
+	int disp_id;
 	int intf_type;
 	struct mutex mutex_lock;
-	struct disp_thread feature_thread;
+	struct kthread_worker *worker;
 	wait_queue_head_t pending_wq;
 	atomic_t pending_doze_cnt;
 

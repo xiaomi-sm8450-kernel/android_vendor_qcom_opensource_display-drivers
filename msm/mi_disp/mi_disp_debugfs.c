@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0-only
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2020, The Linux Foundation. All rights reserved.
- * Copyright (C) 2020 XiaoMi, Inc.
+ * Copyright (c) 2020 XiaoMi, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt)	"mi-disp-debugfs:[%s:%d] " fmt, __func__, __LINE__
@@ -34,7 +34,7 @@ const char *esd_sw_str[MI_DISP_MAX] = {
 };
 
 struct disp_debugfs_t {
-	struct dentry *debug_log;
+	bool debug_log_initialized;
 	bool debug_log_enabled;
 	bool backlight_log_initialized;
 	u32 backlight_log_mask;
@@ -67,21 +67,16 @@ static int mi_disp_debugfs_debug_log_init(void)
 		return -EINVAL;
 	}
 
-	if (disp_debugfs.debug_log) {
+	if (disp_debugfs.debug_log_initialized) {
 		DISP_DEBUG("debugfs entry %s already created, return!\n", DEBUG_LOG_DEBUGFS_NAME);
 		return 0;
 	}
 
-	disp_debugfs.debug_log = debugfs_create_bool(DEBUG_LOG_DEBUGFS_NAME,
-		S_IRUGO | S_IWUSR, disp_core->debugfs_dir,
-		&disp_debugfs.debug_log_enabled);
-	if (IS_ERR_OR_NULL(disp_debugfs.debug_log)) {
-		DISP_ERROR("create debugfs entry failed for %s\n", DEBUG_LOG_DEBUGFS_NAME);
-		ret = -ENODEV;
-	} else {
-		DISP_INFO("create debugfs %s success!\n", DEBUG_LOG_DEBUGFS_NAME);
-		ret = 0;
-	}
+	debugfs_create_bool(DEBUG_LOG_DEBUGFS_NAME, S_IRUGO | S_IWUSR, disp_core->debugfs_dir,
+			&disp_debugfs.debug_log_enabled);
+
+	disp_debugfs.debug_log_initialized = true;
+	DISP_INFO("create debugfs %s success!\n", DEBUG_LOG_DEBUGFS_NAME);
 
 	return ret;
 }
@@ -104,24 +99,37 @@ static int mi_disp_debugfs_backlight_log_init(void)
 	debugfs_create_u32(BACKLIGHT_LOG_DEBUGFS_NAME, S_IRUGO | S_IWUSR,
 		disp_core->debugfs_dir, &disp_debugfs.backlight_log_mask);
 
+	disp_debugfs.backlight_log_initialized = true;
 	DISP_INFO("create debugfs %s success!\n", BACKLIGHT_LOG_DEBUGFS_NAME);
 
-	disp_debugfs.backlight_log_initialized = true;
+
+	return 0;
+}
+
+static int mi_disp_debugfs_esd_sw_show(struct seq_file *m, void *data)
+{
+	struct disp_display *dd_ptr =  m->private;
+
+	seq_printf(m, "parameter: %s\n", "1 or true");
+	seq_printf(m, "for example: echo 1 > /d/mi_display/esd_sw_%s\n",
+			(dd_ptr->disp_id == MI_DISP_PRIMARY) ? "prim" : "sec");
+	seq_printf(m, "\n");
 
 	return 0;
 }
 
 static int mi_disp_debugfs_esd_sw_open(struct inode *inode, struct file *file)
 {
-	/* non-seekable */
-	file->private_data = inode->i_private;
-	return nonseekable_open(inode, file);
+	struct disp_display *dd_ptr = inode->i_private;
+
+	return single_open(file, mi_disp_debugfs_esd_sw_show, dd_ptr);
 }
 
 static ssize_t mi_disp_debugfs_esd_sw_write(struct file *file,
 			const char __user *p, size_t count, loff_t *ppos)
 {
-	struct disp_display *dd_ptr = file->private_data;
+	struct seq_file *m = file->private_data;
+	struct disp_display *dd_ptr =  m->private;
 	char *input;
 	int ret = 0;
 
@@ -158,7 +166,11 @@ exit:
 }
 
 static const struct file_operations esd_sw_debugfs_fops = {
+	.owner = THIS_MODULE,
 	.open  = mi_disp_debugfs_esd_sw_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
 	.write = mi_disp_debugfs_esd_sw_write,
 };
 
@@ -192,7 +204,7 @@ static int mi_disp_debugfs_esd_sw_init(void *d_display, int disp_id)
 			ret = 0;
 		}
 	} else {
-		DISP_INFO("unknown display id\n");
+		DISP_ERROR("unknown display id\n");
 		ret = -EINVAL;
 	}
 
@@ -228,17 +240,27 @@ static int mi_disp_debugfs_esd_sw_deinit(void *d_display, int disp_id)
 	return ret;
 }
 
+static int mi_disp_debugfs_fod_test_show(struct seq_file *m, void *data)
+{
+	seq_printf(m, "parameter: %s\n", "<down_sleep_ms> <up_sleep_ms> <retry_count>");
+	seq_printf(m, "for example: %s\n", "echo 50 50 100 > /d/mi_display/fod_test");
+	seq_printf(m, "\n");
+
+	return 0;
+}
+
 static int mi_disp_debugfs_fod_test_open(struct inode *inode, struct file *file)
 {
-	/* non-seekable */
-	file->private_data = inode->i_private;
-	return nonseekable_open(inode, file);
+	struct disp_display *dd_ptr = inode->i_private;
+
+	return single_open(file, mi_disp_debugfs_fod_test_show, dd_ptr);
 }
 
 static ssize_t mi_disp_debugfs_fod_test_write(struct file *file,
 			const char __user *p, size_t count, loff_t *ppos)
 {
-	struct disp_display *dd_ptr = file->private_data;
+	struct seq_file *m = file->private_data;
+	struct disp_display *dd_ptr =  m->private;
 	char *token, *input, *input_dup = NULL;
 	const char *delim = " ";
 	int ret = 0, i = 0;
@@ -310,10 +332,10 @@ static ssize_t mi_disp_debugfs_fod_test_write(struct file *file,
 	}
 
 	for (i = 0; i < retry_count; i++) {
-		mi_disp_set_fod_queue_work(1, true);
+		mi_disp_lhbm_fod_set_finger_event(dd_ptr->disp_id, FOD_EVENT_DOWN, true);
 		usleep_range((down_sleep_ms * 1000),
 			(down_sleep_ms * 1000) + 10);
-		mi_disp_set_fod_queue_work(0, true);
+		mi_disp_lhbm_fod_set_finger_event(dd_ptr->disp_id, FOD_EVENT_UP, true);
 		usleep_range((up_sleep_ms * 1000),
 			(up_sleep_ms * 1000) + 10);
 	}
@@ -324,7 +346,11 @@ exit:
 }
 
 static const struct file_operations fod_test_debugfs_fops = {
+	.owner = THIS_MODULE,
 	.open  = mi_disp_debugfs_fod_test_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
 	.write = mi_disp_debugfs_fod_test_write,
 };
 
@@ -343,6 +369,11 @@ static int mi_disp_debugfs_fod_test_init(void *d_display, int disp_id)
 		DISP_ERROR("unsupported %s display(%s intf)\n", get_disp_id_name(disp_id),
 			get_disp_intf_type_name(dd_ptr->intf_type));
 		return -EINVAL;
+	}
+
+	if (!is_local_hbm(disp_id)) {
+		DISP_DEBUG("%s panel is not local hbm\n", get_disp_id_name(disp_id));
+		return 0;
 	}
 
 	if (disp_debugfs.fod_test) {

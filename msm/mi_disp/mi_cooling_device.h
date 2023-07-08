@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2020, The Linux Foundation. All rights reserved.
- * Copyright (C) 2020 XiaoMi, Inc.
+ * Copyright (c) 2020 XiaoMi, Inc. All rights reserved.
  */
 
 #ifndef __MI_SDE_THERMAL_CORE_H__
@@ -29,13 +29,8 @@ void mi_backlight_cdev_unregister(struct sde_cdev *cdev);
 
 #else
 int mi_sde_backlight_setup(struct sde_connector *c_conn,
-		struct device *dev, struct backlight_device *bd)
-{
-	return 0;
-}
-static inline void mi_backlight_cdev_unregister(struct sde_cdev *cdev)
-{ }
+		struct device *dev, struct backlight_device *bd) { return 0; }
+static inline void mi_backlight_cdev_unregister(struct sde_cdev *cdev) {}
 #endif
 
-#endif
-
+#endif /* _MI_DISP_CONFIG_H_ */
