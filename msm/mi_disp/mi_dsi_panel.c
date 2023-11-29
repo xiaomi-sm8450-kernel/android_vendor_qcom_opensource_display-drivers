@@ -3151,8 +3151,7 @@ static int mi_dsi_panel_set_lhbm_fod_locked(struct dsi_panel *panel,
 				DSI_CMD_SET_MI_LOCAL_HBM_NORMAL_WHITE_1000NIT, update_bl);
 
 		mi_dsi_panel_update_lhbm_white_param(panel,
-				DSI_CMD_SET_MI_LOCAL_HBM_NORMAL_WHITE_1000NIT,
-				mi_cfg->feature_val[DISP_FEATURE_FLAT_MODE]);
+				DSI_CMD_SET_MI_LOCAL_HBM_NORMAL_WHITE_1000NIT, 1);
 		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_MI_LOCAL_HBM_NORMAL_WHITE_1000NIT);
 		break;
 	case LOCAL_HBM_NORMAL_WHITE_750NIT:
