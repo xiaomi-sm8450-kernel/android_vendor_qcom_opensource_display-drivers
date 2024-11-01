@@ -15,6 +15,7 @@
 #include "msm_prop.h"
 #include "sde_kms.h"
 #include "sde_fence.h"
+#include "mi_sde_connector.h"
 
 #define SDE_CONNECTOR_NAME_SIZE	16
 #define SDE_CONNECTOR_DHDR_MEMPOOL_MAX_SIZE	SZ_32
@@ -611,6 +612,12 @@ struct sde_connector {
 	int rx_len;
 
 	struct edid *cached_edid;
+
+/* LQ.LCM - 2024.4.16- transplant mi disp from zeus start */
+	struct mi_sde_cdev *mi_cdev;
+	struct mi_layer_flags mi_layer_flags;
+	u32 qsync_min_fps_index;
+/* LQ.LCM - 2024.4.16 - end modify */
 };
 
 /**
@@ -1207,5 +1214,8 @@ int sde_connector_esd_status(struct drm_connector *connector);
 
 const char *sde_conn_get_topology_name(struct drm_connector *conn,
 		struct msm_display_topology topology);
+
+void _sde_connector_report_panel_dead(struct sde_connector *conn,
+		bool skip_pre_kickoff);
 
 #endif /* _SDE_CONNECTOR_H_ */

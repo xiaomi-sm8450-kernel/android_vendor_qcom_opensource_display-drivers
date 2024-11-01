@@ -22,6 +22,16 @@
 #include "sde_dbg.h"
 #include "dsi_parser.h"
 
+/* LQ.LCM - 2024.4.16 - transplant mi disp from zeus start */
+#include "mi_disp_feature.h"
+#include "mi_dsi_display.h"
+#include "mi_disp_print.h"
+#include "mi_disp_lhbm.h"
+#include "mi_panel_id.h"
+#include "mi_dsi_panel_count.h"
+/* 2024.4.16 - end modify */
+
+
 #define to_dsi_display(x) container_of(x, struct dsi_display, host)
 #define INT_BASE_10 10
 
@@ -37,7 +47,16 @@
 
 #define SEC_PANEL_NAME_MAX_LEN  256
 
+#define PMIC_PWRKEY_CLOSE_BRIGHNESS 1
+struct dsi_display *global_dsi_display = NULL;
+typedef int (*mi_display_pwrkey_callback)(int);
+extern void mi_display_pwrkey_callback_set(mi_display_pwrkey_callback);
+
+
 u8 dbgfs_tx_cmd_buf[SZ_4K];
+char lockdown_info[128];
+char whitepoint_info_s[128];
+
 static char dsi_display_primary[MAX_CMDLINE_PARAM_LEN];
 static char dsi_display_secondary[MAX_CMDLINE_PARAM_LEN];
 static struct dsi_display_boot_param boot_displays[MAX_DSI_ACTIVE_DISPLAY] = {
@@ -51,6 +70,45 @@ static const struct of_device_id dsi_display_dt_match[] = {
 	{.compatible = "qcom,dsi-display"},
 	{}
 };
+
+/* LQ.LCM - 2024.4.16 - transplant mi disp from zeus start */
+char *mi_dsi_display_get_cmdline_panel_info(struct dsi_display *display)
+{
+	char *buffer = NULL, *buffer_dup = NULL;
+	char *pname = NULL;
+	char *panel_info = NULL;
+	int index = DSI_PRIMARY;
+	if (!display) {
+		DISP_ERROR("Invalid params\n");
+		return NULL;
+	}
+	if (!strcmp(display->display_type, "primary")) {
+		index = DSI_PRIMARY;
+	} else if (!strcmp(display->display_type, "secondary")) {
+		index = DSI_SECONDARY;
+	} else {
+		DISP_ERROR("Invalid display_type params\n");
+		return NULL;
+	}
+	buffer = kstrdup(boot_displays[index].boot_param, GFP_KERNEL);
+	if (!buffer)
+		return NULL;
+	buffer_dup = buffer;
+	buffer = strrchr(buffer, ',');
+	if (buffer && *buffer) {
+		pname = ++buffer;
+	} else {
+		goto exit;
+	}
+	buffer = strrchr(pname, ':');
+	if (buffer)
+		*buffer = '\0';
+	panel_info = kstrdup(pname, GFP_KERNEL);
+exit:
+	kfree(buffer_dup);
+	return panel_info;
+}
+/* 2024.4.16 - end modify */
 
 bool is_skip_op_required(struct dsi_display *display)
 {
@@ -1038,7 +1096,7 @@ release_panel_lock:
 	return rc;
 }
 
-static int dsi_display_ctrl_get_host_init_state(struct dsi_display *dsi_display,
+int dsi_display_ctrl_get_host_init_state(struct dsi_display *dsi_display,
 		bool *state)
 {
 	struct dsi_display_ctrl *ctrl;
@@ -1057,7 +1115,7 @@ static int dsi_display_ctrl_get_host_init_state(struct dsi_display *dsi_display,
 	return rc;
 }
 
-static int dsi_display_cmd_rx(struct dsi_display *display,
+int dsi_display_cmd_rx(struct dsi_display *display,
 			      struct dsi_cmd_desc *cmd)
 {
 	struct dsi_display_ctrl *m_ctrl = NULL;
@@ -2624,7 +2682,7 @@ static void dsi_display_parse_cmdline_topology(struct dsi_display *display,
 	char *sw_te = NULL;
 	unsigned long cmdline_topology = NO_OVERRIDE;
 	unsigned long cmdline_timing = NO_OVERRIDE;
-
+	DSI_INFO("%s: entry\n", __func__);
 	if (display_type >= MAX_DSI_ACTIVE_DISPLAY) {
 		DSI_ERR("display_type=%d not supported\n", display_type);
 		goto end;
@@ -2657,7 +2715,7 @@ static void dsi_display_parse_cmdline_topology(struct dsi_display *display,
 			goto end;
 		}
 	}
-	DSI_DEBUG("successfully parsed command line topology and timing\n");
+	DSI_INFO("%s: successfully parsed command line topology and timing \n", __func__);
 end:
 	display->cmdline_topology = cmdline_topology;
 	display->cmdline_timing = cmdline_timing;
@@ -2673,7 +2731,7 @@ static int dsi_display_parse_boot_display_selection(void)
 	char *pos = NULL;
 	char disp_buf[MAX_CMDLINE_PARAM_LEN] = {'\0'};
 	int i, j;
-
+	DSI_INFO("%s: entry \n", __func__);
 	for (i = 0; i < MAX_DSI_ACTIVE_DISPLAY; i++) {
 		strlcpy(disp_buf, boot_displays[i].boot_param,
 			MAX_CMDLINE_PARAM_LEN);
@@ -2693,7 +2751,7 @@ static int dsi_display_parse_boot_display_selection(void)
 
 		boot_displays[i].boot_disp_en = true;
 	}
-
+	DSI_INFO("%s: end \n", __func__);
 	return 0;
 }
 
@@ -2703,12 +2761,12 @@ static int dsi_display_phy_power_on(struct dsi_display *display)
 	int i;
 	struct dsi_display_ctrl *ctrl;
 
+	DSI_INFO("%s: entry \n", __func__);
 	/* Sequence does not matter for split dsi usecases */
 	display_for_each_ctrl(i, display) {
 		ctrl = &display->ctrl[i];
 		if (!ctrl->ctrl)
 			continue;
-
 		rc = dsi_phy_set_power_state(ctrl->phy, true);
 		if (rc) {
 			DSI_ERR("[%s] Failed to set power state, rc=%d\n",
@@ -2725,6 +2783,7 @@ error:
 			continue;
 		(void)dsi_phy_set_power_state(ctrl->phy, false);
 	}
+	DSI_INFO("%s: end \n", __func__);
 	return rc;
 }
 
@@ -2733,7 +2792,7 @@ static int dsi_display_phy_power_off(struct dsi_display *display)
 	int rc = 0;
 	int i;
 	struct dsi_display_ctrl *ctrl;
-
+	DSI_INFO("entry \n");
 	/* Sequence does not matter for split dsi usecases */
 	display_for_each_ctrl(i, display) {
 		ctrl = &display->ctrl[i];
@@ -2748,6 +2807,7 @@ static int dsi_display_phy_power_off(struct dsi_display *display)
 		}
 	}
 error:
+	DSI_INFO("end \n");
 	return rc;
 }
 
@@ -5836,7 +5896,15 @@ static int dsi_display_bind(struct device *dev,
 
 
 	msm_register_vm_event(master, dev, &vm_event_ops, (void *)display);
-
+/* LQ.LCM - 2024.4.16 - build mi disp file system when kernel bind panel */
+	rc = mi_disp_feature_attach_display(display,
+			mi_get_disp_id(display->display_type), MI_INTF_DSI);
+	if (rc) {
+		DISP_ERROR("failed to attach %s display(%s intf)\n",
+			get_disp_id_name(mi_get_disp_id(display->display_type)),
+			get_disp_intf_type_name(MI_INTF_DSI));
+	}
+/* 2024.4.16 - end modify */
 	goto error;
 
 error_host_deinit:
@@ -5997,6 +6065,34 @@ static void dsi_display_firmware_display(const struct firmware *fw,
 	DSI_DEBUG("success\n");
 }
 
+int mi_display_powerkey_callback(int status)
+{
+	struct dsi_display *dsi_display = global_dsi_display;
+	struct dsi_panel *panel = NULL;
+	int rc = 0;
+
+	if (!dsi_display || !dsi_display->panel){
+		DSI_ERR("[LC_DEBUG]invalid dsi_display  or panel ptr\n");
+		return -EINVAL;
+	}
+	panel = dsi_display->panel;
+	if(status == PMIC_PWRKEY_CLOSE_BRIGHNESS){
+		panel->panel_status = false;
+		if (gpio_is_valid(panel->reset_config.lcm_enn_gpio)) {
+			rc = gpio_direction_output(panel->reset_config.lcm_enn_gpio, 0);
+			if (rc)
+				DSI_ERR("[LC_DEBUG] unable to set dir for ENN gpio rc=%d\n", rc);
+		}
+		udelay(1000);
+		if (gpio_is_valid(panel->reset_config.lcm_enp_gpio)) {
+			rc = gpio_direction_output(panel->reset_config.lcm_enp_gpio, 0);
+			if (rc)
+				DSI_ERR("[LC_DEBUG] unable to set dir for ENP gpio rc=%d\n", rc);
+        	}
+	}
+	return 0;
+}
+
 int dsi_display_dev_probe(struct platform_device *pdev)
 {
 	struct dsi_display *display = NULL;
@@ -6102,6 +6198,9 @@ int dsi_display_dev_probe(struct platform_device *pdev)
 		if (rc)
 			goto end;
 	}
+
+	global_dsi_display = display;
+	mi_display_pwrkey_callback_set(mi_display_powerkey_callback);
 
 	return 0;
 end:
@@ -9039,3 +9138,10 @@ module_param_string(dsi_display1, dsi_display_secondary, MAX_CMDLINE_PARAM_LEN,
 								0600);
 MODULE_PARM_DESC(dsi_display1,
 	"msm_drm.dsi_display1=<display node>:<configX> where <display node> is 'secondary dsi display node name' and <configX> where x represents index in the topology list");
+
+module_param_string(dsi_display_lockdown, lockdown_info, MAX_CMDLINE_PARAM_LEN, 0600);
+MODULE_PARM_DESC(lockdown, "display lockdown info");
+
+module_param_string(dsi_display_whitepoint, whitepoint_info_s, MAX_CMDLINE_PARAM_LEN, 0600);
+MODULE_PARM_DESC(whitepoint, "display whitepoint info");
+

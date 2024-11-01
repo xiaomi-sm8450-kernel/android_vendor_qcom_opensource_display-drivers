@@ -22,6 +22,11 @@ KBUILD_OPTIONS += MODNAME=msm_drm
 KBUILD_OPTIONS += BOARD_PLATFORM=$(TARGET_BOARD_PLATFORM)
 KBUILD_OPTIONS += $(DISPLAY_SELECT)
 
+# Add FACTORY_BUILD macro to disable Some uesless function on factory_build.
+ifeq (1,$(strip $(FACTORY_BUILD)))
+	KBUILD_OPTIONS += FACTORY_BUILD=1
+endif
+
 KBUILD_OPTIONS += KBUILD_EXTRA_SYMBOLS=$(PWD)/$(call intermediates-dir-for,DLKM,mmrm-module-symvers)/Module.symvers
 
 ###########################################################
@@ -37,5 +42,6 @@ LOCAL_REQUIRED_MODULES    := mmrm-module-symvers
 LOCAL_ADDITIONAL_DEPENDENCIES := $(call intermediates-dir-for,DLKM,mmrm-module-symvers)/Module.symvers
 
 include $(DLKM_DIR)/Build_external_kernelmodule.mk
+
 ###########################################################
 endif # DLKM check

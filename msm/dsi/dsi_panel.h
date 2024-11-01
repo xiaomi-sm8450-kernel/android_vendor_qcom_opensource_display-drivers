@@ -23,6 +23,16 @@
 #include "dsi_parser.h"
 #include "msm_drv.h"
 
+/* LQ.LCM - 2024.4.16 - transplant mi disp from zeus start */
+#include "mi_dsi_panel.h"
+#include "mi_dsi_panel_count.h"
+/* 2024.4.16 - end modify */
+
+/* added DISPLAY_FACTORY_BUILD macro to disable Some uesless function on factory_build.*/
+#ifndef DISPLAY_FACTORY_BUILD
+#define DISPLAY_ESD_ENABLE
+#endif
+
 #define MAX_BL_LEVEL 4096
 #define MAX_BL_SCALE_LEVEL 1024
 #define MAX_SV_BL_SCALE_LEVEL 65535
@@ -146,6 +156,7 @@ struct dsi_backlight_config {
 	u32 bl_scale;
 	u32 bl_scale_sv;
 	u32 bl_dcs_subtype;
+	u32 bl_lcd_number;
 	bool bl_inverted_dbv;
 	/* digital dimming backlight LUT */
 	struct drm_msm_dimming_bl_lut *dimming_bl_lut;
@@ -179,6 +190,8 @@ struct dsi_panel_reset_config {
 	int reset_gpio;
 	int disp_en_gpio;
 	int lcd_mode_sel_gpio;
+	int lcm_enp_gpio;
+	int lcm_enn_gpio;
 	u32 mode_sel_state;
 };
 
@@ -202,6 +215,11 @@ struct drm_panel_esd_config {
 	u8 *return_buf;
 	u8 *status_buf;
 	u32 groups;
+#ifdef DISPLAY_ESD_ENABLE
+	int esd_err_irq_gpio;
+	int esd_err_irq;
+	int esd_err_irq_flags;
+#endif//DISPLAY_ESD_ENABLE
 };
 
 struct dsi_panel_spr_info {
@@ -270,6 +288,8 @@ struct dsi_panel {
 	bool reset_gpio_always_on;
 	atomic_t esd_recovery_pending;
 
+	bool panel_status;
+	bool esd_status;
 	bool panel_initialized;
 	bool te_using_watchdog_timer;
 	struct dsi_qsync_capabilities qsync_caps;
@@ -289,6 +309,14 @@ struct dsi_panel {
 	enum dsi_panel_physical_type panel_type;
 
 	struct dsi_panel_ops panel_ops;
+
+/* LQ.LCM - 2024.4.16 - transplant mi disp from zeus start */
+	struct drm_panel_build_id_config id_config;
+	struct drm_panel_wp_config wp_config;
+	struct mi_dsi_panel_cfg mi_cfg;
+	struct mi_dsi_panel_count mi_count;
+	bool qsync_enable;
+/* LQ.LCM - 2024.4.16 - end modify */
 };
 
 static inline bool dsi_panel_ulps_feature_enabled(struct dsi_panel *panel)
@@ -425,4 +453,13 @@ int dsi_panel_create_cmd_packets(const char *data, u32 length, u32 count,
 void dsi_panel_destroy_cmd_packets(struct dsi_panel_cmd_set *set);
 
 void dsi_panel_dealloc_cmd_packets(struct dsi_panel_cmd_set *set);
+
+/* xiaomi add start */
+int dsi_panel_parse_cmd_sets_sub(struct dsi_panel_cmd_set *cmd,
+					enum dsi_cmd_set_type type,
+					struct dsi_parser_utils *utils);
+int dsi_panel_tx_cmd_set(struct dsi_panel *panel,
+		enum dsi_cmd_set_type type);
+int dsi_panel_update_backlight(struct dsi_panel *panel, u32 bl_lvl);
+/* xiaomi add end */
 #endif /* _DSI_PANEL_H_ */
